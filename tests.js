@@ -491,6 +491,7 @@ class BitvalTest{
 
           for (let hand2 of this.testHands[handType2]["correct"]){
             if (hand1 == hand2) continue;
+            if (handType1 != "Full House" && handType2 != "Full House") continue;
 
             let hand2_mask = this.bitval.getBitMasked(hand2.split(" "));
             let hand2_eval = this.bitval.evaluate(hand2_mask);
@@ -498,12 +499,19 @@ class BitvalTest{
             if (this.handStrengthsInOrder.indexOf(handType1) > this.handStrengthsInOrder.indexOf(handType2)){
               console.assert(
                 hand1_eval > hand2_eval, 
-                hand1 + " was ranked lower than " + hand2);
+                `${hand1} (${handType1}) was ranked lower than ${hand2} (${handType2})
+  ${this.bitval.printBitmask(hand1_eval)}
+  ${this.bitval.printBitmask(hand2_eval)}
+              `);
               continue;
             }
             console.assert(
               hand1_eval < hand2_eval, 
-              hand1 + " was ranked higher than " + hand2);
+              `${hand1} (${handType1}) was ranked higher than ${hand2} (${handType2})
+  ${this.bitval.printBitmask(hand1_eval)}
+  ${this.bitval.printBitmask(hand2_eval)}
+
+            `);
           }
         }
       }

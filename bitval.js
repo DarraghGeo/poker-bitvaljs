@@ -152,7 +152,7 @@ class BitVal{
       let _villain = this.deal(villain, deadCards | _hero, numberOfCardsToDeal);
 
       let hero_eval = this.evaluate(_hero);
-      let villain_eval = this.evaluate(_villain, _hero);
+      let villain_eval = this.compare(_villain, _hero);
 
       if (trackHands) result[hero_eval[1]]++;
 
@@ -298,19 +298,48 @@ class BitVal{
       return bin;
   }
 
-  evaluate(hand, compareTo = 0n){
+  evaluate(hand){
 
     let response = 0n;
-    if (compareTo == 0) {
-      if (response = this._bitStraightFlush(hand)) return response | this.STRAIGHT_FLUSH_SCORE;
-      if (response = this._bitQuads(hand)) return response | this.QUADS_SCORE;
-      if (response = this._bitFlush(hand)) return response | this.FLUSH_SCORE;
-      if (response = this._bitStraight(hand)) return response | this.STRAIGHT_SCORE;
-      if (response = this._bitTrips(hand)) return response | this.TRIPS_SCORE;
-      if (response = this._bitPairs(hand)) return response | this.PAIR_SCORE;
-      return hand | this.HIGH_CARD_SCORE;
+    if (response = this._bitStraightFlush(hand)){ 
+      return response | this.STRAIGHT_FLUSH_SCORE;
     }
 
+    if (response = this._bitQuads(hand)){
+      return response | this.QUADS_SCORE;
+    }
+
+    let trips = this._bitTrips(hand);
+    let pairs = this._bitPairs(hand);
+
+    if ((trips && pairs && trips ^ pairs) || this.countBits(trips) > 1){
+      return trips | pairs | this.FULL_HOUSE_SCORE;
+    }
+
+    if (response = this._bitFlush(hand)){
+      return response | this.FLUSH_SCORE;
+    }
+
+    if (response = this._bitStraight(hand)){
+      return response | this.STRAIGHT_SCORE;
+    }
+
+    if (response = trips){
+      return response | this.TRIPS_SCORE;
+    }
+
+    if (response = pairs) {
+      if (this.countBits(response) > 1){
+        return  response | this.TWO_PAIRS_SCORE;
+      }
+      return  response | this.PAIR_SCORE;
+    }
+
+    return hand | this.HIGH_CARD_SCORE;
+
+  }
+
+  compare(hand, compareTo){
     let pairs = this._bitPairs(hand) | this.PAIR_SCORE;
     if (pairs > compareTo) return pairs;
     let trips = this._bitTrips(hand) | this.TRIPS_SCORE;
