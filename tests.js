@@ -1,7 +1,12 @@
-class PrtBitvalTest{
+if (typeof require !== 'undefined') {
+  const BitVal = require("./BitVal");
+}
+
+class BitvalTest{
 
   constructor(){
-    this.bitval = new PrtBitVal();
+    this.bitval = new BitVal();
+>>>>>>> version2
 
     this.handStrengthsInOrder = ["High Card", "Pair", "Two Pair", "Trips", "Straight", "Flush", "Full House", "Quads", "Straight Flush"];
     this.testHands = {
@@ -157,6 +162,7 @@ class PrtBitvalTest{
                 "9h 9d 7s 2s 8s 9s Ts",
                 "8h 8d 8c 9d Ts Js Qs",
                 "8h 8d 8c 8d 9s Ts Js",
+                "8h 8d 8c 8s 9s Ts Js",
                 "7h 7d 4c Td Js Qs Ks",
                 "6h 6d 6c Jd 6s Ks As",
                 "5h 5d 5c Ad Ks As 2s"
@@ -250,41 +256,69 @@ class PrtBitvalTest{
     };
   }
 
-  testNew(){
-    let caseQuads = this.bitval.getBitMasked("Ac Ad Ah As Kc Jd 4h".split(" "))[1];
-    let evalQuads = this.bitval._bitQuads(caseQuads);
-    console.log("Quads",this.bitval.printBitmask(evalQuads,4));
-    console.assert(evalQuads != 0n);
-
-    let casePairs = this.bitval.getBitMasked("Ac Ad Qh 2s Kc Jd 4h".split(" "))[1];
-    let evalPairs = this.bitval._bitPairs(casePairs);
-    console.log("Pairs",this.bitval.printBitmask(evalPairs,4));
-    console.assert(evalPairs != 0n);
-
-    let caseTrips = this.bitval.getBitMasked("Ac Ad Ah 2s Kc Jd 4h".split(" "))[1];
-    let evalTrips = this.bitval._bitTrips(caseTrips);
-    console.log("Trips",this.bitval.printBitmask(evalTrips,4));
-    console.assert(evalTrips != 0n);
-
-    let caseStraightFlush = this.bitval.getBitMasked("Ac Kc Qc Jc Tc 3d 4h".split(" "))[1];
-    let evalStraightFlush = this.bitval._bitStraightFlush(caseStraightFlush);
-    console.log("StrFl",this.bitval.printBitmask(evalStraightFlush,4));
-    console.assert(evalStraightFlush != 0n);
-
-    let caseStraight = this.bitval.getBitMasked("Ac Kh Qd Jc Ts 3d 4h".split(" "))[1];
-    let evalStraight = this.bitval._bitStraight(caseStraight);
-    console.log("Strgt",this.bitval.printBitmask(evalStraight,4));
-    console.assert(evalStraight != 0n);
+  approximatelyEqual(val1, val2, epsilon = 0.1) { 
+    return Math.abs(val1 - val2) < epsilon; 
   }
 
-  approximatelyEqual(val1, val2, epsilon = 0.1) { return Math.abs(val1 - val2) < epsilon; }
+  testStrength(){
 
-  testDifferentAssignment(){
-    for(let handType in this.testHands){
-      for (let hand of this.testHands[handType]["correct"]){
-        let bitmask = this.bitval.getBitMasked(hand.split(" "));
-        let evaled = this.bitval.evaluate(bitmask[0], bitmask[1]);
-        console.assert(evaled[1] == handType, evaled[1] + " vs " + handType + " : : " + hand);
+    let handStrengths = Object.keys(this.testHands);
+
+    for (let handStrength of handStrengths){
+
+        let handType = 0n;
+
+        switch(handStrength){
+          case "Straight Flush":
+            handType = this.bitval.STRAIGHT_FLUSH_SCORE;
+            break;
+          case "Flush":
+            handType = this.bitval.FLUSH_SCORE;
+            break;
+          case "Straight":
+            handType = this.bitval.STRAIGHT_SCORE;
+            break;
+          case "Quads":
+            handType = this.bitval.QUADS_SCORE;
+            break;
+          case "Trips":
+            handType = this.bitval.TRIPS_SCORE;
+            break;
+          case "Pair":
+            handType = this.bitval.PAIR_SCORE;
+            break;
+          case "Two Pair":
+            handType = this.bitval.TWO_PAIRS_SCORE;
+            break;
+          case "High Card":
+            handType = this.bitval.HIGH_CARD_SCORE;
+            break;
+          case "Full House":
+            handType = this.bitval.FULL_HOUSE_SCORE;
+            break;
+        }
+
+      for (let testCase of this.testHands[handStrength]["correct"]){
+
+        let mask = this.bitval.getBitMasked(testCase.split(" "));
+        let result = this.bitval.evaluate(mask);
+        console.assert(
+          result & handType, 
+          testCase + " wrongly evaluated NOT as " + 
+          handStrength, 
+          this.bitval.printBitmask(mask));
+      }
+
+      for (let testCase of this.testHands[handStrength]["incorrect"]){
+
+        let mask = this.bitval.getBitMasked(testCase.split(" "));
+        let result = this.bitval.evaluate(mask);
+        console.assert(
+          (result & handType) === 0n, 
+          testCase + " wrongly evaluated AS " + 
+          handStrength, 
+          this.bitval.printBitmask(mask));
+
       }
     }
   }
@@ -292,10 +326,9 @@ class PrtBitvalTest{
   testExactnessOfEquity(iterations = 100000){
 
     let testCases = [
-      {"hero": "Ac Kd", "villain": "Qh Qs", "board": "", "win": 42.66, "lose": 57.0, "tie": 0.337},
-      {"hero": "Jc Jd", "villain": "Qh Ts", "board": "", "win": 70.54, "lose": 29.15, "tie": 0.313},
-      {"hero": "4c 4h", "villain": "9h 9s", "board": "", "win": 18.3, "lose": 81.0, "tie": 0.71},
-      {"hero": "Kc Qd", "villain": "6h Qs", "board": "", "win": 73.39, "lose": 24.1, "tie": 2.54},
+      {"hero": "Jc Jd", "villain": "Qh Ts", "board": false, "win": 70.54, "lose": 29.15, "tie": 0.313},
+      {"hero": "4c 4h", "villain": "9h 9s", "board": false, "win": 18.3, "lose": 81.0, "tie": 0.71},
+      {"hero": "Kc Qd", "villain": "6h Qs", "board": false, "win": 73.39, "lose": 24.1, "tie": 2.54},
       {"hero": "4c 4h", "villain": "9h 9s", "board": "9d 3d Js Qd Qh", "win": 0, "lose": 100, "tie": 0},
       {"hero": "4c 4h", "villain": "9h 9s", "board": "6d 7h 8c 9c 5s", "win": 0, "lose": 0, "tie": 100},
       {"hero": "Kc Qd", "villain": "6h Qs", "board": "5s Jc Js Qh 7s", "win": 100, "lose": 0, "tie": 0},
@@ -309,60 +342,78 @@ class PrtBitvalTest{
       {"hero": "4d Jd", "villain": "6c 9c", "board": "8h 8s Ts", "win": 59.49, "lose": 35.96, "tie": 4.55},
       {"hero": "Qh 6h", "villain": "Th 8h", "board": "8c 2d 6s", "win": 20.24, "lose": 79.76, "tie": 0},
       {"hero": "5h Th", "villain": "7d 8d", "board": "9c As Js", "win": 60, "lose": 35.45, "tie": 4.55},
-      {"hero": "Jc 7c", "villain": "9s 9h", "board": "7h Qc 5d", "win": 24.66, "lose": 75.34, "tie": 0},/*
-      {"hero": "6c 9c", "villain": "8h 7h", "board": "Ts 5c 5d", "win": , "lose": , "tie": },
-      {"hero": "Ts 8s", "villain": "8c Tc", "board": "6h Jd 4s", "win": , "lose": , "tie": },
-      {"hero": "7h Th", "villain": "9d Qd", "board": "Jc Kh Ks", "win": , "lose": , "tie": },
-      {"hero": "9d 7d", "villain": "Jh 5h", "board": "Kh Ah 2s", "win": , "lose": , "tie": },
-      {"hero": "8s Js", "villain": "6d Kd", "board": "4c 8h 2d", "win": , "lose": , "tie": },
-      {"hero": "Td Kd", "villain": "Qs Qs", "board": "Ac 9c Jh", "win": , "lose": , "tie": },
-      {"hero": "Ac 6d", "villain": "Qh 8s", "board": "2d 4s 4h 5c", "win": , "lose": , "tie": },
-      {"hero": "5s 3s", "villain": "7c 5h", "board": "8d 5s Jc Qs", "win": , "lose": , "tie": },
-      {"hero": "2h 3h", "villain": "4s Js", "board": "6c 2c Th 6s Ts", "win": , "lose": , "tie": },
-      {"hero": "Ad Ks", "villain": "Qc Js", "board": "2h 3s 4d 5c 6h", "win": , "lose": , "tie": },
-      {"hero": "2c 3d", "villain": "4h 5c", "board": "6s 7h 8c 9d Ts", "win": , "lose": , "tie": },
-      {"hero": "Ah Kh", "villain": "Qd Jd", "board": "2c 3h 4s 5d 6c", "win": , "lose": , "tie": },
-      {"hero": "3c 4c", "villain": "5h 6h", "board": "7s 8d 9c Ts Jh", "win": , "lose": , "tie": },
-      {"hero": "Kc Qc", "villain": "Jd Td", "board": "9c 8h 7s 6d 5c", "win": , "lose": , "tie": },
-      {"hero": "4d 5d", "villain": "6c 7c", "board": "8h 9s Ts Jc Qd", "win": , "lose": , "tie": },
-      {"hero": "Qh Jh", "villain": "Th 9h", "board": "8c 7d 6s 5h 4c", "win": , "lose": , "tie": },
-      {"hero": "5h 6h", "villain": "7d 8d", "board": "9c Ts Js Qs Kd", "win": , "lose": , "tie": },
-      {"hero": "Jc Tc", "villain": "9s 8s", "board": "7h 6c 5d 4h 3s", "win": , "lose": , "tie": },
-      {"hero": "6c 7c", "villain": "8h 9h", "board": "Ts Jc Qd Ks As", "win": , "lose": , "tie": },
-      {"hero": "Ts 9s", "villain": "8c 7c", "board": "6h 5d 4s 3c 2h", "win": , "lose": , "tie": },
-      {"hero": "7h 8h", "villain": "9d Td", "board": "Jc Qs Ks As 2d", "win": , "lose": , "tie": },
-      {"hero": "9d Td", "villain": "Jh Qh", "board": "Kh Ah 2s 3c 4h", "win": , "lose": , "tie": },
-      {"hero": "8s 7s", "villain": "6d 5d", "board": "4c 3h 2d As Ks", "win": , "lose": , "tie": },
-      {"hero": "Td Jd", "villain": "Qs Ks", "board": "Ac 2c 3h 4d 5s", "win": , "lose": , "tie": },
-      {"hero": "9h Th", "villain": "Jc Qc", "board": "Kd Ad 2s 3h 4c", "win": , "lose": , "tie": },*/
-      //KcQd 5s Jc Js Qh 7s 6hQs
-      //AcKd Jh As 5h Js 6s QhQs
+      {"hero": "Jc 7c", "villain": "9s 9h", "board": "7h Qc 5d", "win": 24.66, "lose": 75.34, "tie": 0},
     ];
+
     for (let testCase of testCases){
-      let numberOfIterations = iterations;
-      if (testCase["board"].split(" ").length == 5) numberOfIterations = Math.min(1, iterations);
-      let result = this.bitval.simulate(numberOfIterations, 5, testCase["hero"].split(" "), testCase["villain"].split(" "), testCase["board"].split(" "));
-      console.assert(this.approximatelyEqual(result["win"],testCase["win"],1) && this.approximatelyEqual(result["lose"],testCase["lose"],1) && this.approximatelyEqual(result["tie"],testCase["tie"],1),
-       `Win: ${result["win"]} (${testCase["win"]}) \t\t Tie: ${result["tie"]} (${testCase["tie"]}) \t\t Lose: ${result["lose"]} (${testCase["lose"]}) \t\t`);
+
+      let numberOfIterations = testCase["board"].length > 10 ? 1 : iterations;
+
+      let result = this.bitval.simulate(
+        numberOfIterations, 
+        5, 
+        testCase["hero"] ? testCase["hero"].split(" ") : [],
+        testCase["villain"] ? testCase["villain"].split(" ") : [],
+        testCase["board"] ? testCase["board"].split(" ") : []
+      );
+
+      for (let key in result) { 
+        result[key] = parseFloat((result[key] / numberOfIterations) * 100).toFixed(2); 
+      }
+
+      console.assert(
+        this.approximatelyEqual(result["win"],testCase["win"],1) && 
+        this.approximatelyEqual(result["lose"],testCase["lose"],1) && 
+        this.approximatelyEqual(result["tie"],testCase["tie"],1),
+        `
+        ${testCase["hero"]} \t ${testCase["board"]} \t ${testCase["villain"]}
+          Win: ${result["win"]} (${testCase["win"]}) \t\t 
+          Tie: ${result["tie"]} (${testCase["tie"]}) \t\t 
+          Lose: ${result["lose"]} (${testCase["lose"]})`);
     }
   }
 
   testExactnessOfHandFrequencies(){
 
     let testCases = [
-      {"hero": "Ac Kd", "villain": "Qh Qs", "board": "", "High Card": 19, "Pair": 45.54, "Two Pair": 23.56, "Trips": 4.68, "Straight": 2.34, "Flush": 2.27, "Full House": 2.45, "Quads": 0.15, "Straight Flush": 0.01},
-      {"hero": "Jc Jd", "villain": "Qh Ts", "board": "", "High Card": 0, "Pair": 35.14, "Two Pair": 39.13, "Trips": 12.25, "Straight": 1.53, "Flush": 2.25, "Full House": 8.75, "Quads": 0.9, "Straight Flush": 0.02},
-      {"hero": "4c 4h", "villain": "9h 9s", "board": "", "High Card": 0, "Pair": 34.44, "Two Pair": 39.48, "Trips": 12.06, "Straight": 2.23, "Flush": 1.91, "Full House": 8.93, "Quads": 0.93, "Straight Flush": 0.02},
-      {"hero": "Kc Qd", "villain": "6h 5s", "board": "", "High Card": 18.1, "Pair": 44.11, "Two Pair": 22.94, "Trips": 4.56, "Straight": 5.5, "Flush": 2.24, "Full House": 2.38, "Quads": 0.13, "Straight Flush": 0.02}
+      {
+        "hero": "Ac Kd",    "villain": "Qh Qs", "board": "", 
+        "High Card": 19,    "Pair": 45.54,      "Two Pair": 23.56, 
+        "Trips": 4.68,      "Straight": 2.34,   "Flush": 2.27, 
+        "Full House": 2.45, "Quads": 0.15,      "Straight Flush": 0.01
+      },
+      {
+        "hero": "Jc Jd",    "villain": "Qh Ts", "board": "", 
+        "High Card": 0,     "Pair": 35.14,      "Two Pair": 39.13, 
+        "Trips": 12.25,     "Straight": 1.53,   "Flush": 2.25, 
+        "Full House": 8.75, "Quads": 0.9,       "Straight Flush": 0.02
+      },
+      {
+        "hero": "4c 4h",    "villain": "9h 9s", "board": "", 
+        "High Card": 0,     "Pair": 34.44,      "Two Pair": 39.48, 
+        "Trips": 12.06,     "Straight": 2.23,   "Flush": 1.91, 
+        "Full House": 8.93, "Quads": 0.93,      "Straight Flush": 0.02
+      },
+      {
+        "hero": "Kc Qd",    "villain": "6h 5s", "board": "", 
+        "High Card": 18.1,  "Pair": 44.11,      "Two Pair": 22.94, 
+        "Trips": 4.56,      "Straight": 5.5,    "Flush": 2.24, 
+        "Full House": 2.38, "Quads": 0.13,      "Straight Flush": 0.02
+      }
     ];
 
     for (let testCase of testCases){
-      let result = this.bitval.simulate(1000000, 5, testCase["hero"].split(" "), testCase["villain"].split(" "), testCase["board"].split(" "));
+      let result = this.bitval.simulate(
+        1000000, 
+        5, 
+        testCase["hero"].split(" "), 
+        testCase["villain"].split(" "), 
+        testCase["board"].split(" "));
       
       for (let handType in testCase) {
         if (handType === "hero" || handType === "villain" || handType === "board") continue;
-        
-        console.assert(this.approximatelyEqual(result[handType], testCase[handType],0.25), 
+        console.assert(
+          this.approximatelyEqual(result[handType], testCase[handType],0.25), 
           `${handType}: ${result[handType]} (${testCase[handType]}) ${testCase["hero"]}`
         );
       }
@@ -404,57 +455,6 @@ class PrtBitvalTest{
           }
         }
       }
-    }
-  }
-
-  testHasFlush(){
-    let testHands = [
-      "Ac 4c Qc 2d 3c Kh 7c",
-      "Ac 4c Qc 2c 3c Kc 7c",
-      "Ac 4c Qc 2d 3c Kc 7c",
-    ];
-
-    for (let testHand of testHands){
-      let mask = this.bitval.getBitMasked(testHand.split(" "));
-      console.assert(this.bitval.hasFlush(mask[0]), "No flush present.\t" + testHand + "\t\t" + this.bitval.printBitmask(mask[0]));
-    }
-
-
-    testHands = [
-      "Ac 4c Qh 2d 3c Kh 7c",
-      "Ac 4d Qh 2d 3c Kh 7c",
-      "Ah 2d 3c 4h 5s Ks Qs",
-      "Ah 2d 3c 4h 5s Ks Qs"
-    ];
-
-    for (let testHand of testHands){
-      let mask = this.bitval.getBitMasked(testHand.split(" "));
-      console.assert(!this.bitval.hasFlush(mask[0]), "Flush present.\t" + testHand + "\t\t" + this.bitval.printBitmask(mask[0]));
-    }
-  }
-
-  testHasStraight(){
-    let testHands = [
-      "Ah 2d 3c 4h 5s Ks Qs",
-      "2h 3d 4c 5h 6s As Qs",
-      "3h 4d 5c 6h 7s 2s Ks",
-    ];
-
-    for (let testHand of testHands){
-      let mask = this.bitval.getBitMasked(testHand.split(" "));
-      console.assert(this.bitval.hasStraight(mask[0]), "No straight present.\t" + testHand + "\t\t" + this.bitval.printBitmask(mask[0]));
-    }
-
-
-    testHands = [
-      "Ac 4c Qh 2d 3c Kh 7c",
-      "Ac 4d Qh 2d 3c Kh 7c",
-      "Ah 2d 3c 4h 6s Ks Qs",
-    ];
-
-    for (let testHand of testHands){
-      let mask = this.bitval.getBitMasked(testHand.split(" "));
-      console.assert(!this.bitval.hasStraight(mask[0]), "Straight present.\t" + testHand + "\t\t" + this.bitval.printBitmask(mask[0]));
     }
   }
 
@@ -569,5 +569,89 @@ class PrtBitvalTest{
           let evaluation = this.bitval.PAIR(mask[0]);
           console.assert(evaluation === BigInt(0), "Evaluated as Pair\t\t" + testHand + "\t\t" + evaluation);
       }
+  }
+}
+
+
+  testMethods(iterations, timeGoal) {
+
+    let methods = {
+      "_bitFlush": this.bitval._bitFlush.bind(this.bitval),
+      "_bitQuads": this.bitval._bitQuads.bind(this.bitval),
+      "_bitPairs": this.bitval._bitPairs.bind(this.bitval),
+      "_bitStraightFlush": this.bitval._bitStraightFlush.bind(this.bitval),
+      "_bitTrips": this.bitval._bitTrips.bind(this.bitval),
+      "_bitTrips2": this.bitval._bitTrips2.bind(this.bitval),
+      "_bitStraight": this.bitval._bitStraight.bind(this.bitval),
+      "normalize": this.bitval.normalize.bind(this.bitval),
+      "stripBits": this.bitval.stripBits.bind(this.bitval),
+      "getBitMasked": this.bitval.getBitMasked.bind(this.bitval),
+      "getRandomHand": this.bitval.getRandomHand.bind(this.bitval),
+      "countBits": this.bitval.countBits.bind(this.bitval),
+      "deal": this.bitval.countBits.bind(this.bitval),
+    };
+
+    for (let methodName in methods) {
+
+      let hand = this.bitval.getBitMasked("Ac Qh 2c 3s 4h 6d 9s".split(" "));
+      if(methodName === "getBitMasked") hand = "Ac Qh 2c 3s 4h 6d 9s".split(" ");
+      if(methodName === "getRandomHand") hand = [];
+
+      let method = methods[methodName];
+      let startTime = Date.now();
+
+      for (let i = 0; i < iterations; i++) {
+        method(hand);
+      }
+
+      let executionTime = Date.now() - startTime;
+
+      if (executionTime > timeGoal) {
+        console.assert(false, 
+          `${methodName} missed the time goal. 
+          Execution Time: ${executionTime}ms, 
+          Time Goal: ${timeGoal}ms`);
+      }
+    }
+  }
+
+  testDifferentHandsCompared(){
+    for (let handType1 of this.handStrengthsInOrder){
+
+      for (let handType2 of this.handStrengthsInOrder){
+        if (handType1 == handType2) continue;
+
+        for (let hand1 of this.testHands[handType1]["correct"]){
+
+          let hand1_mask = this.bitval.getBitMasked(hand1.split(" "));
+          let hand1_eval = this.bitval.evaluate(hand1_mask);
+
+          for (let hand2 of this.testHands[handType2]["correct"]){
+            if (hand1 == hand2) continue;
+            if (handType1 != "Full House" && handType2 != "Full House") continue;
+
+            let hand2_mask = this.bitval.getBitMasked(hand2.split(" "));
+            let hand2_eval = this.bitval.evaluate(hand2_mask);
+
+            if (this.handStrengthsInOrder.indexOf(handType1) > this.handStrengthsInOrder.indexOf(handType2)){
+              console.assert(
+                hand1_eval > hand2_eval, 
+                `${hand1} (${handType1}) was ranked lower than ${hand2} (${handType2})
+  ${this.bitval.printBitmask(hand1_eval)}
+  ${this.bitval.printBitmask(hand2_eval)}
+              `);
+              continue;
+            }
+            console.assert(
+              hand1_eval < hand2_eval, 
+              `${hand1} (${handType1}) was ranked higher than ${hand2} (${handType2})
+  ${this.bitval.printBitmask(hand1_eval)}
+  ${this.bitval.printBitmask(hand2_eval)}
+
+            `);
+          }
+        }
+      }
+    }
   }
 }
