@@ -6,7 +6,6 @@ class BitvalTest{
 
   constructor(){
     this.bitval = new BitVal();
->>>>>>> version2
 
     this.handStrengthsInOrder = ["High Card", "Pair", "Two Pair", "Trips", "Straight", "Flush", "Full House", "Quads", "Straight Flush"];
     this.testHands = {
