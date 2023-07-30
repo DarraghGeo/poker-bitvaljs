@@ -7,7 +7,7 @@ class BitvalTest{
   constructor(){
     this.bitval = new BitVal();
 
-    this.handStrengthsInOrder = ["High Card", "Pair", "Two Pair", "Trips", "Straight", "Flush", "Full House", "Quads", "Straight Flush"];
+    this.handStrengthsInOrder = ["Pair", "Two Pair", "Trips", "Straight", "Flush", "Full House", "Quads", "Straight Flush"];
     this.testHands = {
         "Straight Flush": {
             "correct": [
@@ -76,6 +76,7 @@ class BitvalTest{
                 "4s 6s 8s Ts Qs 2d 3d"
             ],
             "incorrect": [
+                "9h 9s 6d 7h 8c 9c 5s",
                 "Ah Kh Qh Jh Th 2s 3s",
                 "2d Kd 8d 6s 4d Ac Ah",
                 "3c 5d 9c Qc Kc 2s 3s",
@@ -102,6 +103,7 @@ class BitvalTest{
                 "9h Td Jc Qh Kh 8s Ks",
                 "Th Jd Qc Kh Ah 9s Qs",
                 "4h 5d 6c 7h 9s 3s Qs",
+                "4c 4h 6d 7h 8c 9c 5s",
             ],
             "incorrect": [
                 "Ah 2d 3c 4h 6s Ks Qs",
@@ -217,40 +219,6 @@ class BitvalTest{
                 "5h 5d 2c 3d 4s 5s 6s"
             ]
         },
-        "High Card": {
-          "correct": [
-              "Kh 2c 4d 6s 8h Ts 3s",
-              "Qh 3d 5c 7s 9h Js 2s",
-              "Jh 4d 6c 8s Th Qs 3s",
-              "Th 5d 7c 9s Jh Ks 2s",
-              "9h 2d 4c 6s 8h Ts 3d",
-              "8h 3d 5c 7s 9h Js 2c",
-              "7h 2d 4c 6s 8h Ts 3h",
-              "6h 5d 3c 7s 9h Js 2d",
-              "4h 3d 5c 7s 9h Js 2h",
-              "2h 5d 3c 7s 9h Js 6h",
-              "Ah 2c 4d 6s 8h Ts 7h",
-              "Kh 3d 5c 7s 9h Js 8h",
-          ],
-          "incorrect": [
-                "Ah Ad 2c 3d 4s 5s 6s",
-                "Ah Ad Ac 2d 3s 4s 5s",
-                "Jh Jd 5c 5d 6s 7s 8s",
-                "Th Td 6c 6d 7s 8s 9s",
-                "6h 6d 6c Td Js Qs Ks",
-                "4h 5d 6c 7h 8s 3s Qs",
-                "5h 6d 7c 8h 9s 4s Ks",
-                "Jh Jd Jc 5d 6s 7s 8s",
-                "Jc Jd Js Jh 3h 2s 2d",
-                "Th Td Ts Tc 8d Ah As",
-                "9h 9d 9s 9c 7s 2h 2d",
-                "7h 7d 7c 9d Ts Js Qs",
-                "7h 7d 7c 9d 9s 8s 2s",
-                "6h 6d 6c Td Ts 7s 2s",
-                "2s 3s 4s 5s 6s 7c 8c",
-                "3d 4d 5d 6d 7d Ks Kc",
-             ]
-        }
     };
   }
 
@@ -288,9 +256,6 @@ class BitvalTest{
           case "Two Pair":
             handType = this.bitval.TWO_PAIRS_SCORE;
             break;
-          case "High Card":
-            handType = this.bitval.HIGH_CARD_SCORE;
-            break;
           case "Full House":
             handType = this.bitval.FULL_HOUSE_SCORE;
             break;
@@ -304,7 +269,10 @@ class BitvalTest{
           result & handType, 
           testCase + " wrongly evaluated NOT as " + 
           handStrength, 
-          this.bitval.printBitmask(mask));
+          "\n[H]",
+          this.bitval.printBitmask(mask),
+          "\n[R]",
+          this.bitval.printBitmask(result));
       }
 
       for (let testCase of this.testHands[handStrength]["incorrect"]){
@@ -315,7 +283,10 @@ class BitvalTest{
           (result & handType) === 0n, 
           testCase + " wrongly evaluated AS " + 
           handStrength, 
-          this.bitval.printBitmask(mask));
+          "\n[H]",
+          this.bitval.printBitmask(mask),
+          "\n[R]",
+          this.bitval.printBitmask(result));
 
       }
     }
@@ -345,7 +316,7 @@ class BitvalTest{
     ];
 
     for (let testCase of testCases){
-
+      //if (!testCase["board"] || testCase["board"].length < 10) continue;
       let numberOfIterations = testCase["board"].length > 10 ? 1 : iterations;
 
       let result = this.bitval.simulate(
@@ -420,6 +391,12 @@ class BitvalTest{
     }
   }
 
+  testCompareHands(){
+    let testCases = [
+      {"hero": 0n, "villain": 0n, "board": 0n}
+    ];
+  }
+
 
   testSimulationSpeed(iterations = 500000, timeLimit = 1000){
       let startTime = performance.now();
@@ -440,6 +417,7 @@ class BitvalTest{
 
     let methods = {
       "_bitFlush": this.bitval._bitFlush.bind(this.bitval),
+      "_bitFlush2": this.bitval._bitFlush2.bind(this.bitval),
       "_bitQuads": this.bitval._bitQuads.bind(this.bitval),
       "_bitPairs": this.bitval._bitPairs.bind(this.bitval),
       "_bitStraightFlush": this.bitval._bitStraightFlush.bind(this.bitval),
@@ -449,7 +427,6 @@ class BitvalTest{
       "normalize": this.bitval.normalize.bind(this.bitval),
       "stripBits": this.bitval.stripBits.bind(this.bitval),
       "getBitMasked": this.bitval.getBitMasked.bind(this.bitval),
-      "getRandomHand": this.bitval.getRandomHand.bind(this.bitval),
       "countBits": this.bitval.countBits.bind(this.bitval),
       "deal": this.bitval.countBits.bind(this.bitval),
     };

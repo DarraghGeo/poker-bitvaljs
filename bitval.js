@@ -1,6 +1,6 @@
 class XorShift32 {
-  constructor(seed = 1) {
-    this.state = seed;
+  constructor() {
+    this.state = 1;//Math.floor(Math.random()*52);
   }
 
   next(max) {
@@ -104,15 +104,14 @@ class BitVal{
     this.ALL_HANDS = Object.keys(this.CARD_MASKS);
 
     // Bitmask for recording the hand
-    this.HIGH_CARD_SCORE = BigInt(1) << BigInt(55);
-    this.PAIR_SCORE = BigInt(1) << BigInt(56);
-    this.TWO_PAIRS_SCORE = BigInt(1) << BigInt(57);
-    this.TRIPS_SCORE = BigInt(1) << BigInt(58);
-    this.STRAIGHT_SCORE = BigInt(1) << BigInt(59);
-    this.FLUSH_SCORE = BigInt(1) << BigInt(60);
-    this.FULL_HOUSE_SCORE = BigInt(1) << BigInt(61);
-    this.QUADS_SCORE = BigInt(1) << BigInt(62);
-    this.STRAIGHT_FLUSH_SCORE = BigInt(1) << BigInt(63);
+    this.PAIR_SCORE = 1n << 56n;
+    this.TWO_PAIRS_SCORE = 1n << 57n;
+    this.TRIPS_SCORE = 1n << 58n;
+    this.STRAIGHT_SCORE = 1n << 59n;
+    this.FLUSH_SCORE = 1n << 60n;
+    this.FULL_HOUSE_SCORE = 1n << 61n;
+    this.QUADS_SCORE = 1n << 62n;
+    this.STRAIGHT_FLUSH_SCORE = 1n << 63n;
 
     // Quick reference masks, number indicates position from right of grouping.
     this.BIT_1 = BigInt("0b00010001000100010001000100010001000100010001000100010001");
@@ -130,7 +129,15 @@ class BitVal{
    * @returns {} - Returns an key/value pair for "win", "lose", "tie"
    */
   simulate(iterations, numberOfBoardCards = 5, hero = [], villain = [], board = [], deadCards = [], trackHands = false){
-    deadCards = [...hero, ...villain, ...board, ...deadCards];
+
+    let numberOfCardsToDeal = (numberOfBoardCards + 2) - (hero.length + board.length);
+    this.xorShift = new XorShift32();
+
+    deadCards = this.getBitMasked([...hero,...villain,...board,...deadCards]);
+    numberOfCardsToDeal = numberOfBoardCards - board.length;
+    hero = this.getBitMasked(hero);
+    villain = this.getBitMasked(villain);
+    board = this.getBitMasked(board);
 
     let result = { 
       "win": 0,           "tie": 0,         "lose": 0, 
@@ -139,22 +146,18 @@ class BitVal{
       "Full House": 0,    "Quads": 0,       "Straight Flush": 0 
     };
 
-    //hero = ["Ac", "Kc"];
-    //villain = ["Ks", "Qd"];
-    let numberOfCardsToDeal = (numberOfBoardCards + 2) - (hero.length + board.length);
-    deadCards = this.getBitMasked([...hero,...villain,...board,...deadCards]);
-    hero = this.getBitMasked([...hero,...board]);
-    villain = this.getBitMasked([...villain,...board]);
-    this.xorShift = new XorShift32();
     for (let i = 0; i < iterations; i++){
+      let _board = this.deal(board, deadCards, numberOfCardsToDeal) | board;
+      console.log("");
+      console.log(this.getHandFromMask(hero).join(""),this.getHandFromMask(_board).join(" "), this.getHandFromMask(villain).join(""));
 
-      let _hero = this.deal(hero, deadCards, numberOfCardsToDeal);
-      let _villain = this.deal(villain, deadCards | _hero, numberOfCardsToDeal);
+      let hero_eval = this.evaluate(hero | _board);
+      let villain_eval = this.compare(villain | _board, hero_eval);
+      //let villain_eval = this.compare(villain | _board, hero_eval);
 
-      let hero_eval = this.evaluate(_hero);
-      let villain_eval = this.compare(_villain, _hero);
 
-      if (trackHands) result[hero_eval[1]]++;
+      this.debugString(hero, hero_eval, villain, villain_eval);
+      //this.debug(hero, villain, hero_eval, villain_eval);
 
       if (hero_eval > villain_eval){
         result["win"]++;
@@ -169,6 +172,74 @@ class BitVal{
     }
     
     return result;
+  }
+
+  getHandStrengthFromMask(handMask){
+
+    if (handMask & this.PAIR_SCORE){
+        return "Pair";
+    }
+
+    if (handMask & this.TWO_PAIRS_SCORE){
+        return "Two Pair";
+    }
+
+    if (handMask & this.TRIPS_SCORE){
+        return "Trips";
+    }
+
+    if (handMask & this.STRAIGHT_SCORE){
+        return "Straight";
+    }
+
+    if (handMask & this.FLUSH_SCORE){
+        return "Flush";
+    }
+
+    if (handMask & this.FULL_HOUSE_SCORE){
+        return "Full House";
+    }
+
+    if (handMask & this.QUADS_SCORE){
+        return "Quads";
+    }
+
+    if (handMask & this.STRAIGHT_FLUSH_SCORE){
+        return "Straight Flush";
+    }
+
+    return "High Card";
+  }
+
+  getHandFromMask(handMask){
+    let hand = [];
+
+    for (let card in this.CARD_MASKS){
+      if ((this.CARD_MASKS[card] & handMask) === 0n) continue;
+      hand.push(card);
+      handMask = handMask ^ this.CARD_MASKS[card];
+    }
+
+      return hand;
+  }
+
+  debugString(hero, heroResult, villain, villainResult){
+    let result = "ties with";
+    if (heroResult > villainResult) result = "beats";
+    if (heroResult < villainResult) result = "loses to";
+    console.log(this.getHandFromMask(hero).join(" "),result,this.getHandFromMask(villain).join(" "));
+    console.log(this.printBitmask(heroResult),this.getHandStrengthFromMask(heroResult));
+    console.log(this.printBitmask(villainResult),this.getHandStrengthFromMask(villainResult));
+  }
+  debug(heroHand, villainHand, heroResult = false, villainResult = false){
+    let maskSuits = "____ ____ dhcs dhcs dhcs dhcs dhcs dhcs dhcs dhcs dhcs dhcs dhcs dhcs dhcs dhcs";
+    let maskRanks = "____ ____ AAAA KKKK QQQQ JJJJ TTTT 9999 8888 7777 6666 5555 4444 3333 2222 AAAA";
+    let handRanks = "8765 4321 AAAA KKKK QQQQ JJJJ TTTT 9999 8888 7777 6666 5555 4444 3333 2222 AAAA";
+    console.log("  ",maskSuits,"\t","  ",handRanks);
+    console.log("Hh",this.printBitmask(heroHand),"\t","Hr",this.printBitmask(heroResult));
+    console.log("Vh",this.printBitmask(villainHand),"\t","Vr",this.printBitmask(villainResult));
+    console.log("  ",maskRanks,"\t","  ",handRanks);
+    console.log("[9=SF, 8=Q, 7=FH, 6=FL, 5=ST, 4=TR, 3=TP, 2=P, 1=HC]");
   }
 
   deal(hand, deadCards = 0n, numberOfCards = 7){
@@ -206,12 +277,12 @@ class BitVal{
   }
 
 
-  stripBits(hand, numberOfBits = 5){
-    let bitsToStrip = this.countBits(hand) - numberOfBits;
+  stripBits(hand, desiredSizeOfMask = 5){
+    let numberOfBitsToStrip = this.countBits(hand) - desiredSizeOfMask;
 
-    while(bitsToStrip > 0){
+    while(numberOfBitsToStrip > 0){
       hand &= (hand - 1n);
-      bitsToStrip--;
+      numberOfBitsToStrip--;
     }
     return hand;
   }
@@ -249,21 +320,6 @@ class BitVal{
    *
    * This would be more efficient if passed a deck.
    */
-  getRandomHand(randomHand = [], count = 7, deadCards = []){
-    if (randomHand.length === count) return randomHand;
-    if (randomHand.length === 1 && randomHand[0] === "") randomHand = [];
-
-    let hands = this.ALL_HANDS.slice();
-    let _randomHand = randomHand.slice();
-
-    while (_randomHand.length < count) {
-      let randomIndex = Math.floor(Math.random() * hands.length);
-      if (!deadCards.includes(hands[randomIndex])) _randomHand.push(hands[randomIndex]);
-      hands.splice(randomIndex, 1);
-    }
-
-    return _randomHand;
-  }
 
 
 
@@ -335,25 +391,58 @@ class BitVal{
       return  response | this.PAIR_SCORE;
     }
 
-    return hand | this.HIGH_CARD_SCORE;
+    return this.normalize(hand);
 
   }
 
   compare(hand, compareTo){
-    let pairs = this._bitPairs(hand) | this.PAIR_SCORE;
-    if (pairs > compareTo) return pairs;
-    let trips = this._bitTrips(hand) | this.TRIPS_SCORE;
-    if (trips > compareTo) return trips;
-    let straight = this._bitStraight(hand) | this.STRAIGHT_SCORE;
-    if (straight > compareTo) return straight;
-    let flush = this._bitFlush(hand) | this.FLUSH_SCORE;
-    if (flush > compareTo) return flush;
-    let quads = this._bitQuads(hand) | this.QUADS_SCORE;
-    if (quads > compareTo) return quads;
-    let straightFlush = this._bitStraightFlush(hand) | this.STRAIGHT_FLUSH_SCORE;
-    if (straightFlush > compareTo) return straightFlush;
+    let pairs = this._bitPairs(hand);
+    let trips = this._bitTrips(hand);
+    let fullHouse = pairs | trips | this.FULL_HOUSE_SCORE;
 
-    return hand | this.HIGH_CARD_SCORE;
+    if (trips && pairs && trips ^ pairs && fullHouse >= compareTo){
+      return fullHouse;
+    }
+
+    if (this.countBits(trips) > 1){
+      return fullHouse;
+    }
+
+    if (pairs && this.countBits(pairs) > 1){
+      pairs = pairs | this.TWO_PAIRS_SCORE;
+    } else if (pairs) {
+      pairs = pairs | this.PAIR_SCORE;
+    }
+
+    if (pairs >= compareTo){
+      return pairs;
+    }
+
+    if (trips && (trips | this.TRIPS_SCORE) >= compareTo){
+      return trips;
+    }
+
+    let straight = this._bitStraight(hand);
+    if (straight && (straight | this.STRAIGHT_SCORE) >= compareTo){
+      return straight | this.STRAIGHT_SCORE;
+    }
+
+    let flush = this._bitFlush(hand);
+    if (flush && (flush | this.FLUSH_SCORE) >= compareTo){
+      return flush | this.FLUSH_SCORE;
+    }
+
+    let quads = this._bitQuads(hand);
+    if (quads && (quads | this.QUADS_SCORE) >= compareTo){
+      return quads | this.QUADS_SCORE;
+    }
+
+    let straightFlush = this._bitStraightFlush(hand);
+    if (straightFlush && (straightFlush | this.STRAIGHT_FLUSH_SCORE) >= compareTo){
+      return straightFlush;
+    }
+
+    return this.normalize(hand);
   }
 
   _bitPairs(hand){
@@ -365,14 +454,6 @@ class BitVal{
       ((this.BIT_2 & hand) << 2n) & (this.BIT_4 & hand) | // 0101
       ((this.BIT_3 & hand) << 1n) & (this.BIT_4 & hand)); // 0011
     return ((pairs >> 1n | pairs >> 2n | pairs >> 3n) & this.BIT_1);
-  }
-
-  _bitTrips2(hand){ 
-    return (
-      (((this.BIT_1 & hand) << 1n & (this.BIT_2 & hand)) << 1n & (this.BIT_3 & hand)) >> 2n | // 0111
-      (((this.BIT_2 & hand) << 1n & (this.BIT_3 & hand)) << 1n & (this.BIT_4 & hand)) >> 3n | // 1110
-      (((this.BIT_1 & hand) << 2n & (this.BIT_3 & hand)) << 1n & (this.BIT_4 & hand)) >> 3n | // 1101
-      (((this.BIT_1 & hand) << 1n & (this.BIT_2 & hand)) << 2n & (this.BIT_4 & hand)) >> 3n) & this.BIT_1 // 1011
   }
 
   _bitTrips(hand){ 
@@ -394,9 +475,33 @@ class BitVal{
     return 0n;
   }
 
-  _bitStraight(hand){
-    return this._bitStraightFlush((hand | hand >> 1n | hand >> 2n | hand >> 3n) & this.BIT_1);
+  _bitFlush2(hand){
 
+    hand = hand >> 4n;
+
+    let spade = hand & this.BIT_1;
+    if (this.countBits(spade) > 4) return spade;
+
+    let club = hand & this.BIT_2;
+    if (this.countBits(club) > 4) return club;
+
+    let heart = hand & this.BIT_3;
+    if (this.countBits(heart) > 4) return heart;
+
+    let diamond = hand & this.BIT_4;
+    if (this.countBits(diamond) > 4) return spade;
+}
+
+  _bitStraight(hand){
+    hand = (hand | hand >> 1n | hand >> 2n | hand >> 3n) & this.BIT_1;
+
+    hand = hand & 
+      (hand << 4n) & 
+      (hand << 8n) & 
+      (hand << 12n) & 
+      (hand << 16n);
+
+    return this.stripBits(hand, 1);
   }
 
   _bitQuads(hand){
@@ -409,12 +514,13 @@ class BitVal{
   }
 
   _bitStraightFlush(hand){
-    return hand & 
+    hand = hand & 
       (hand << 4n) & 
       (hand << 8n) & 
       (hand << 12n) & 
       (hand << 16n);
 
+    return this.stripBits(hand, 1);
   }
 
 }
