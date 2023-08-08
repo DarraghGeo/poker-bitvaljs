@@ -1,5 +1,5 @@
 if (typeof require !== 'undefined') {
-  const BitVal = require("./BitVal");
+  const BitVal = require("./BitVal.js");
 }
 
 class BitvalTest{
@@ -393,10 +393,25 @@ class BitvalTest{
 
   testCompareHands(){
     let testCases = [
-      {"hero": 0n, "villain": 0n, "board": 0n}
+      {"hero": ["Jc","7c"], "villain": ["9s","9h"], "board": ["Qc","Jh","9c","7h","5d"]},
+      {"hero": ["Jd","4d"], "villain": ["9c","6c"], "board": ["Ts","Td","8s","8h","7s"]},
+      {"hero": ["9c","6c"], "villain": ["Jd","4d"], "board": ["Ts","8s","8h","7h","7c"]},
     ];
-  }
 
+
+    for (let testCase of testCases){
+      let hero = this.bitval.getBitMasked([...testCase["hero"],...testCase["board"]])
+      let villain = this.bitval.getBitMasked([...testCase["villain"],...testCase["board"]])
+
+      let heroResult = this.bitval.evaluate(hero);
+      let villainResult = this.bitval.compare(villain, heroResult);
+
+      console.assert(heroResult > villainResult,
+      `${testCase["hero"]}:\t${result[handType]} (${testCase[handType]}) ${testCase["hero"]}`
+      );
+    }
+
+  }
 
   testSimulationSpeed(iterations = 500000, timeLimit = 1000){
       let startTime = performance.now();
@@ -494,5 +509,11 @@ class BitvalTest{
       }
     }
   }
+}
+
+if (typeof require !== 'undefined') {
+  let tester = new BitvalTest();
+
+  tester.testSimulationSpeed();
 }
 

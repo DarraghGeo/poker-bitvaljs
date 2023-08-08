@@ -148,15 +148,12 @@ class BitVal{
 
     for (let i = 0; i < iterations; i++){
       let _board = this.deal(board, deadCards, numberOfCardsToDeal) | board;
-      console.log("");
-      console.log(this.getHandFromMask(hero).join(""),this.getHandFromMask(_board).join(" "), this.getHandFromMask(villain).join(""));
 
       let hero_eval = this.evaluate(hero | _board);
       let villain_eval = this.compare(villain | _board, hero_eval);
-      //let villain_eval = this.compare(villain | _board, hero_eval);
 
 
-      this.debugString(hero, hero_eval, villain, villain_eval);
+      this.debugString(hero, hero_eval, villain, villain_eval, _board);
       //this.debug(hero, villain, hero_eval, villain_eval);
 
       if (hero_eval > villain_eval){
@@ -223,11 +220,11 @@ class BitVal{
       return hand;
   }
 
-  debugString(hero, heroResult, villain, villainResult){
-    let result = "ties with";
-    if (heroResult > villainResult) result = "beats";
-    if (heroResult < villainResult) result = "loses to";
-    console.log(this.getHandFromMask(hero).join(" "),result,this.getHandFromMask(villain).join(" "));
+  debugString(hero, heroResult, villain, villainResult, board){
+    let result = "Tie";
+    if (heroResult > villainResult) result = "Hero wins.";
+    if (heroResult < villainResult) result = "Hero loses.";
+    console.log(this.getHandFromMask(hero).join(""),"\t",this.getHandFromMask(board).join(" "),"\t",this.getHandFromMask(villain).join(""),"\t",result);
     console.log(this.printBitmask(heroResult),this.getHandStrengthFromMask(heroResult));
     console.log(this.printBitmask(villainResult),this.getHandStrengthFromMask(villainResult));
   }
@@ -400,7 +397,7 @@ class BitVal{
     let trips = this._bitTrips(hand);
     let fullHouse = pairs | trips | this.FULL_HOUSE_SCORE;
 
-    if (trips && pairs && trips ^ pairs && fullHouse >= compareTo){
+    if ((trips && pairs) && (trips ^ pairs) && fullHouse >= compareTo){
       return fullHouse;
     }
 
@@ -408,7 +405,7 @@ class BitVal{
       return fullHouse;
     }
 
-    if (pairs && this.countBits(pairs) > 1){
+    if (pairs && (this.countBits(pairs) > 1)){
       pairs = pairs | this.TWO_PAIRS_SCORE;
     } else if (pairs) {
       pairs = pairs | this.PAIR_SCORE;
@@ -418,27 +415,27 @@ class BitVal{
       return pairs;
     }
 
-    if (trips && (trips | this.TRIPS_SCORE) >= compareTo){
+    if (trips && ((trips | this.TRIPS_SCORE) >= compareTo)){
       return trips;
     }
 
     let straight = this._bitStraight(hand);
-    if (straight && (straight | this.STRAIGHT_SCORE) >= compareTo){
+    if (straight && ((straight | this.STRAIGHT_SCORE) >= compareTo)){
       return straight | this.STRAIGHT_SCORE;
     }
 
     let flush = this._bitFlush(hand);
-    if (flush && (flush | this.FLUSH_SCORE) >= compareTo){
+    if (flush && ((flush | this.FLUSH_SCORE) >= compareTo)){
       return flush | this.FLUSH_SCORE;
     }
 
     let quads = this._bitQuads(hand);
-    if (quads && (quads | this.QUADS_SCORE) >= compareTo){
+    if (quads && ((quads | this.QUADS_SCORE) >= compareTo)){
       return quads | this.QUADS_SCORE;
     }
 
     let straightFlush = this._bitStraightFlush(hand);
-    if (straightFlush && (straightFlush | this.STRAIGHT_FLUSH_SCORE) >= compareTo){
+    if (straightFlush && ((straightFlush | this.STRAIGHT_FLUSH_SCORE) >= compareTo)){
       return straightFlush;
     }
 
