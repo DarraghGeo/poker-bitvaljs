@@ -1,11 +1,12 @@
 if (typeof require !== 'undefined') {
-  const BitVal = require("./BitVal.js");
+  const Bitval128 = require("./bitval_128.js");
+  global.Bitval128 = Bitval128;
 }
 
 class BitvalTest{
 
   constructor(){
-    this.bitval = new BitVal();
+    this.bitval = new Bitval128();
 
     this.handStrengthsInOrder = ["Pair", "Two Pair", "Trips", "Straight", "Flush", "Full House", "Quads", "Straight Flush"];
     this.testHands = {
@@ -226,6 +227,24 @@ class BitvalTest{
     return Math.abs(val1 - val2) < epsilon; 
   }
 
+  printSpecificHand(hand){
+    hand = this.bitval.convertHandArrayToBitmask(hand);
+    console.log(this.bitval.formatBitmask(hand));
+    let evaluation = this.bitval.lazyEvaluate(hand);
+    console.log(evaluation.toString(2));
+    console.log(this.bitval.FULL_HOUSE.toString(2));
+
+    console.log("");
+    console.log(this.bitval.ONE_PAIR.toString(2));
+    console.log(this.bitval.TWO_PAIR.toString(2));
+    console.log(this.bitval.THREE_OF_A_KIND.toString(2));
+    console.log(this.bitval.STRAIGHT.toString(2));
+    console.log(this.bitval.FLUSH.toString(2));
+    console.log(this.bitval.FULL_HOUSE.toString(2));
+    console.log(this.bitval.FOUR_OF_A_KIND.toString(2));
+    console.log(this.bitval.STRAIGHT_FLUSH.toString(2));
+  }
+
   testStrength(){
 
     let handStrengths = Object.keys(this.testHands);
@@ -236,57 +255,57 @@ class BitvalTest{
 
         switch(handStrength){
           case "Straight Flush":
-            handType = this.bitval.STRAIGHT_FLUSH_SCORE;
+            handType = this.bitval.STRAIGHT;
             break;
           case "Flush":
-            handType = this.bitval.FLUSH_SCORE;
+            handType = this.bitval.FLUSH;
             break;
           case "Straight":
-            handType = this.bitval.STRAIGHT_SCORE;
+            handType = this.bitval.STRAIGHT;
             break;
           case "Quads":
-            handType = this.bitval.QUADS_SCORE;
+            handType = this.bitval.FOUR_OF_A_KIND;
             break;
           case "Trips":
-            handType = this.bitval.TRIPS_SCORE;
+            handType = this.bitval.THREE_OF_A_KIND;
             break;
           case "Pair":
-            handType = this.bitval.PAIR_SCORE;
+            handType = this.bitval.ONE_PAIR;
             break;
           case "Two Pair":
-            handType = this.bitval.TWO_PAIRS_SCORE;
+            handType = this.bitval.TWO_PAIR;
             break;
           case "Full House":
-            handType = this.bitval.FULL_HOUSE_SCORE;
+            handType = this.bitval.FULL_HOUSE;
             break;
         }
 
       for (let testCase of this.testHands[handStrength]["correct"]){
 
-        let mask = this.bitval.getBitMasked(testCase.split(" "));
-        let result = this.bitval.evaluate(mask);
+        let mask = this.bitval.convertHandArrayToBitmask(testCase.split(" "));
+        let result = this.bitval.lazyEvaluate(mask);
         console.assert(
           result & handType, 
           testCase + " wrongly evaluated NOT as " + 
           handStrength, 
           "\n[H]",
-          this.bitval.printBitmask(mask),
+          this.bitval.formatBitmask(mask),
           "\n[R]",
-          this.bitval.printBitmask(result));
+          this.bitval.formatBitmask(result));
       }
 
       for (let testCase of this.testHands[handStrength]["incorrect"]){
 
-        let mask = this.bitval.getBitMasked(testCase.split(" "));
-        let result = this.bitval.evaluate(mask);
+        let mask = this.bitval.convertHandArrayToBitmask(testCase.split(" "));
+        let result = this.bitval.lazyEvaluate(mask);
         console.assert(
           (result & handType) === 0n, 
           testCase + " wrongly evaluated AS " + 
           handStrength, 
           "\n[H]",
-          this.bitval.printBitmask(mask),
+          this.bitval.formatBitmask(mask),
           "\n[R]",
-          this.bitval.printBitmask(result));
+          this.bitval.formatBitmask(result));
 
       }
     }
@@ -492,16 +511,16 @@ class BitvalTest{
               console.assert(
                 hand1_eval > hand2_eval, 
                 `${hand1} (${handType1}) was ranked lower than ${hand2} (${handType2})
-  ${this.bitval.printBitmask(hand1_eval)}
-  ${this.bitval.printBitmask(hand2_eval)}
+  ${this.bitval.formatBitmask(hand1_eval)}
+  ${this.bitval.formatBitmask(hand2_eval)}
               `);
               continue;
             }
             console.assert(
               hand1_eval < hand2_eval, 
               `${hand1} (${handType1}) was ranked higher than ${hand2} (${handType2})
-  ${this.bitval.printBitmask(hand1_eval)}
-  ${this.bitval.printBitmask(hand2_eval)}
+  ${this.bitval.formatBitmask(hand1_eval)}
+  ${this.bitval.formatBitmask(hand2_eval)}
 
             `);
           }
@@ -513,7 +532,7 @@ class BitvalTest{
 
 if (typeof require !== 'undefined') {
   let tester = new BitvalTest();
-
-  tester.testSimulationSpeed();
+  //tester.testStrength();
+  tester.printSpecificHand(["Ac", "Ad", "3c", "4h", "2s", "6s", "7d"]);
 }
 
