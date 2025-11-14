@@ -1,4 +1,4 @@
-const BitVal = require("./bitval.js");
+const BitVal = require("../bitval.js");
 const BitValDebugger = require("./BitValDebugger.js");
 const testCases = require("./bitval_test_cases.js");
 

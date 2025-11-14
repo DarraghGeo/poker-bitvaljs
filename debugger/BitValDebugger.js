@@ -1,5 +1,5 @@
 if (typeof require !== 'undefined') {
-  const BitVal = require("./bitval.js");
+  const BitVal = require("../bitval.js");
 }
 
 class BitValDebugger {

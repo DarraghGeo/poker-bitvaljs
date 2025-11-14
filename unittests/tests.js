@@ -1,5 +1,5 @@
 if (typeof require !== 'undefined') {
-  const Bitval128 = require("./bitval_128.js");
+  const Bitval128 = require("../bitval_128.js");
   global.Bitval128 = Bitval128;
 }
 
