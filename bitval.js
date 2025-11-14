@@ -147,7 +147,7 @@ class BitVal{
     const isExhaustive = iterations === exhaustiveCombinations && numberOfCardsToDeal > 0 && numberOfCardsToDeal <= 2;
     let comboArray = null;
     if (isExhaustive) {
-      const availableMasks = this._getAvailableCardMasks(deadCards);
+      const availableMasks = this._getAvailableCardMasksByLookUp(deadCards);
       comboArray = this._getCombinations(availableMasks, numberOfCardsToDeal);
     }
 
@@ -367,6 +367,22 @@ class BitVal{
       let card = 1n << BigInt(i);
       if (card & deck) masks.push(card);
     }
+    return masks;
+  }
+
+  _getAvailableCardMasksByLookUp(deadCards){
+    let masks = [];
+    let deck = ~deadCards;
+    
+    // Iterate through all actual card masks, not bit positions
+    for (const card in this.CARD_MASKS) {
+      const cardMask = this.CARD_MASKS[card];
+      // Check if the entire card mask is available (not in deadCards)
+      if ((cardMask & deck) === cardMask) {
+        masks.push(cardMask);
+      }
+    }
+    
     return masks;
   }
 
