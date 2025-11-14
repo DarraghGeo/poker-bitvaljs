@@ -119,6 +119,26 @@ class BitVal{
     this.BIT_3 = BigInt("0b01000100010001000100010001000100010001000100010001000100");
     this.BIT_4 = BigInt("0b10001000100010001000100010001000100010001000100010001000");
 
+    // Pre-computed rank masks for all 13 ranks (0=Two, 1=Three, ..., 12=Ace)
+    // Each mask represents all 4 suits of that rank
+    // Derived from rank constants: base | (base << 1) | (base << 2) | (base << 3)
+    // Ace (rank 12) has dual representation: bits 0-3 and 52-55
+    this.RANK_MASKS = [
+      240n,                   // Rank 0 (Two)
+      3840n,                  // Rank 1 (Three)
+      61440n,                 // Rank 2 (Four)
+      983040n,                // Rank 3 (Five)
+      15728640n,              // Rank 4 (Six)
+      251658240n,             // Rank 5 (Seven)
+      4026531840n,            // Rank 6 (Eight)
+      64424509440n,           // Rank 7 (Nine)
+      1030792151040n,         // Rank 8 (Ten)
+      16492674416640n,        // Rank 9 (Jack)
+      263882790666240n,       // Rank 10 (Queen)
+      4222124650659840n,      // Rank 11 (King)
+      67553994410557455n      // Rank 12 (Ace - both high and low bits)
+    ];
+
   }
 
 
@@ -267,6 +287,31 @@ class BitVal{
     }
 
     return hand;
+  }
+
+  /**
+   * Unified kicker extraction and encoding
+   * @param {BigInt} hand - Full hand bitmask
+   * @param {BigInt} madeHandRanksMask - Mask of ranks used in the made hand (all suits)
+   * @param {number} numKickers - Number of kickers needed (1, 2, or 3)
+   * @returns {BigInt} - Encoded kickers at bits 13-25 (rank << 13) to avoid overlap with made hand ranks (bits 0-12)
+   */
+  _extractKickers(hand, madeHandRanksMask, numKickers) {
+    const kickersOnly = hand & ~madeHandRanksMask;
+    let kickerValue = 0n;
+    let kickersFound = 0;
+    
+    // Extract highest kickers (descending rank order)
+    for (let i = 12n; i >= 0n && kickersFound < numKickers; i--) {
+      const rankMask = this.RANK_MASKS[i];
+      if (kickersOnly & rankMask) {
+        // Encode at bit position (rank + 13) to avoid overlap with made hand ranks
+        kickerValue |= (1n << (i + 13n));
+        kickersFound++;
+      }
+    }
+    
+    return kickerValue;
   }
 
   /**
@@ -423,7 +468,10 @@ class BitVal{
     }
 
     if (response = this._bitQuads(hand)){
-      return response | this.QUADS_SCORE;
+      // Extract highest kicker (quads use 4 cards, need 1 kicker)
+      let quadsRanksMask = response | (response << 1n) | (response << 2n) | (response << 3n);
+      let kickers = this._extractKickers(hand, quadsRanksMask, 1);
+      return (response | this.QUADS_SCORE) | kickers;
     }
 
     let trips = this._bitTrips(hand);
@@ -442,24 +490,23 @@ class BitVal{
     }
 
     if (response = trips){
-      return (response | this.TRIPS_SCORE) | this.normalize(hand);
+      // Extract 2 kickers (trips use 3 cards, need 2 kickers)
+      let tripsRanksMask = response | (response << 1n) | (response << 2n) | (response << 3n);
+      let kickers = this._extractKickers(hand, tripsRanksMask, 2);
+      return (response | this.TRIPS_SCORE) | kickers;
     }
 
     if (response = pairs) {
       if (this.countBits(response) > 1){
+        // Two Pair: Extract 1 kicker (two pairs use 4 cards, need 1 kicker)
         let pairRanksMask = response | (response << 1n) | (response << 2n) | (response << 3n);
-        let kickersOnly = hand & ~pairRanksMask;
-        let highestKicker = 0n;
-        for (let i = 12n; i >= 0n; i--) {
-          let rankMask = (this.BIT_1 << (i * 4n)) | (this.BIT_2 << (i * 4n)) | (this.BIT_3 << (i * 4n)) | (this.BIT_4 << (i * 4n));
-          if (kickersOnly & rankMask) {
-            highestKicker = 1n << i;
-            break;
-          }
-        }
-        return (response | this.TWO_PAIRS_SCORE) | highestKicker;
+        let kickers = this._extractKickers(hand, pairRanksMask, 1);
+        return (response | this.TWO_PAIRS_SCORE) | kickers;
       }
-      return (response | this.PAIR_SCORE) | this.normalize(hand);
+      // Pair: Extract 3 kickers (pair uses 2 cards, need 3 kickers)
+      let pairRanksMask = response | (response << 1n) | (response << 2n) | (response << 3n);
+      let kickers = this._extractKickers(hand, pairRanksMask, 3);
+      return (response | this.PAIR_SCORE) | kickers;
     }
 
     return this.normalize(hand);
@@ -524,7 +571,13 @@ class BitVal{
       ((this.BIT_2 & hand) << 1n) & (this.BIT_3 & hand) | // 0110
       ((this.BIT_2 & hand) << 2n) & (this.BIT_4 & hand) | // 0101
       ((this.BIT_3 & hand) << 1n) & (this.BIT_4 & hand)); // 0011
-    return ((pairs >> 1n | pairs >> 2n | pairs >> 3n) & this.BIT_1) & ~1n;
+    pairs = ((pairs >> 1n | pairs >> 2n | pairs >> 3n) & this.BIT_1) & ~1n;
+    // Fix Ace dual representation: if bit 12 (Ace rank) is set, verify we have 2+ Aces
+    // Single Ace has 2 bits (dual representation), 2+ Aces have 4+ bits
+    if (pairs & (1n << 12n) && this.countBits(hand & this.RANK_MASKS[12]) < 4) {
+      pairs = pairs & ~(1n << 12n);
+    }
+    return pairs;
   }
 
   _bitTrips(hand){ 

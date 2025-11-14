@@ -7,264 +7,250 @@ class BitValDebugger {
     this.bitval = bitvalInstance;
   }
 
-  compare(hero, villain, board, deadCards = [], referenceData = {}, verbose = true) {
-    if (board.length < 3) {
-      throw new Error("Board must have at least 3 cards (flop)");
-    }
+  _getLineColor(status, roundedAbsDiff, tolerance) {
+    const RESET = '\x1b[0m';
+    const GREEN = '\x1b[32m';  // Medium green
+    const BRIGHT_RED = '\x1b[91m';  // Bright red
+    const YELLOW = '\x1b[33m';  // Yellow for warning
 
+    if (status === '✓') {
+      return GREEN;
+    } else if (status === '✗') {
+      return BRIGHT_RED;
+    } else if (status === '⚠') {
+      return YELLOW;
+    }
+    return '';
+  }
+
+  _normalizeFlopKey(cards) {
+    // Sort cards alphabetically and join with space
+    return [...cards].sort().join(' ');
+  }
+
+  _shouldDrillDown(actual, expected, tolerance, comprehensive) {
+    if (comprehensive) return true;
+    const diff = Math.abs(actual - expected);
+    const roundedDiff = Math.round(diff * 100) / 100;
+    return roundedDiff > tolerance;
+  }
+
+  compare(hero, villain, board = [], deadCards = [], referenceData = {}, verbose = true, comprehensive = false, toleranceFlop = 0, toleranceNoBoard = 1.5) {
     const results = {
       overall: null,
-      turn: { tested: 0, discrepancies: [], summary: null },
-      river: { tested: 0, discrepancies: [], summary: null }
+      flops: {},
+      summary: {
+        flopsTested: 0,
+        flopsFailed: 0,
+        turnsTested: 0,
+        turnsFailed: 0,
+        riversTested: 0,
+        riversFailed: 0
+      }
     };
 
-    if (verbose) {
-      console.log("=".repeat(80));
-      console.log("BITVAL DEBUGGER COMPARISON");
-      console.log("=".repeat(80));
-      console.log();
-      console.log(`Hero: ${hero.join(' ')}`);
-      console.log(`Villain: ${villain.join(' ')}`);
-      console.log(`Board: ${board.join(' ')}`);
-      if (deadCards.length > 0) {
-        console.log(`Dead Cards: ${deadCards.join(' ')}`);
+    // Header removed - all outputs are single line
+    // Extract test description if provided (for run_tests.js context)
+    let testDescription = '';
+    if (referenceData.testDescription) {
+      testDescription = `${referenceData.testDescription} - `;
+      delete referenceData.testDescription; // Remove so it doesn't interfere with flop detection
+    }
+
+    // Level 0: Overall Equity (pre-flop)
+    const overallEquity = referenceData.overallEquity;
+    if (overallEquity !== undefined && overallEquity !== null) {
+      const tolerance = toleranceNoBoard;
+      const result = this.bitval.simulate(1000000, 5, hero, villain, [], deadCards);
+      const actualEquity = this._calculateEquity(result);
+      const difference = actualEquity - overallEquity;
+      const absDifference = Math.abs(difference);
+      const roundedAbsDiff = Math.round(absDifference * 100) / 100;
+      const status = roundedAbsDiff <= tolerance ? '✓' : roundedAbsDiff <= tolerance * 2 ? '⚠' : '✗';
+      const lineColor = this._getLineColor(status, roundedAbsDiff, tolerance);
+
+      // Always show overall equity (single line) - this is the base level
+      const RESET = '\x1b[0m';
+      console.log(`${lineColor}${testDescription}${actualEquity.toFixed(2)}% (Expected: ${overallEquity.toFixed(2)}%, Diff: ${difference >= 0 ? '+' : ''}${difference.toFixed(2)}%, Tol: ${tolerance.toFixed(2)}%)${RESET}`);
+
+      results.overall = {
+        actual: actualEquity,
+        expected: overallEquity,
+        difference: difference
+      };
+
+      // Level 1: Test flops only if overall equity fails or comprehensive mode
+      const shouldTestFlops = comprehensive || this._shouldDrillDown(actualEquity, overallEquity, tolerance, comprehensive);
+      
+      // Check if referenceData has flop structure (keys are flop strings)
+      const hasFlopStructure = Object.keys(referenceData).length > 0 && 
+        Object.values(referenceData).some(v => Array.isArray(v) && v.length >= 1 && typeof v[0] === 'number');
+      
+      if (shouldTestFlops && hasFlopStructure) {
+        
+        for (const [flopKey, flopData] of Object.entries(referenceData)) {
+          // Skip if not an array or doesn't match flop structure
+          if (!Array.isArray(flopData) || flopData.length < 1 || typeof flopData[0] !== 'number') continue;
+          
+          const [expectedFlopEquity, turnData] = flopData;
+          const flopCards = flopKey.split(' ');
+          
+          const flopResult = this._testFlop(hero, villain, flopCards, deadCards, expectedFlopEquity, toleranceFlop, verbose, comprehensive);
+          results.flops[flopKey] = flopResult;
+          results.summary.flopsTested++;
+          if (flopResult.failed) {
+            results.summary.flopsFailed++;
+          }
+
+          // Level 2: Test turns only if flop fails or comprehensive mode
+          const shouldTestTurns = comprehensive || flopResult.failed;
+          
+          if (shouldTestTurns && turnData && typeof turnData === 'object' && Object.keys(turnData).length > 0) {
+            for (const [turnCard, turnCardData] of Object.entries(turnData)) {
+              if (!Array.isArray(turnCardData) || turnCardData.length < 1) continue;
+              
+              const [expectedTurnEquity, riverData] = turnCardData;
+              
+              const turnResult = this._testTurn(hero, villain, flopCards, turnCard, deadCards, expectedTurnEquity, toleranceFlop, verbose, comprehensive, flopKey);
+              if (!flopResult.turns) flopResult.turns = {};
+              flopResult.turns[turnCard] = turnResult;
+              results.summary.turnsTested++;
+              if (turnResult.failed) {
+                results.summary.turnsFailed++;
+              }
+
+              // Level 3: Test rivers only if turn fails or comprehensive mode
+              const shouldTestRivers = comprehensive || turnResult.failed;
+              
+              if (shouldTestRivers && riverData && typeof riverData === 'object' && Object.keys(riverData).length > 0) {
+                for (const [riverCard, riverEquity] of Object.entries(riverData)) {
+                  if (!Array.isArray(riverEquity) || riverEquity.length < 1) continue;
+                  
+                  const [expectedRiverEquity] = riverEquity;
+                  
+                  const riverResult = this._testRiver(hero, villain, flopCards, turnCard, riverCard, deadCards, expectedRiverEquity, toleranceFlop, verbose, flopKey, turnCard);
+                  if (!turnResult.rivers) turnResult.rivers = {};
+                  turnResult.rivers[riverCard] = riverResult;
+                  results.summary.riversTested++;
+                  if (riverResult.failed) {
+                    results.summary.riversFailed++;
+                  }
+                }
+              }
+            }
+          }
+        }
       }
-      console.log();
+    } else {
+      // No overall equity specified, just calculate and display
+      const result = this.bitval.simulate(1000000, 5, hero, villain, board, deadCards);
+      const actualEquity = this._calculateEquity(result);
+      
+      if (verbose) {
+        console.log(`${actualEquity.toFixed(2)}%`);
+      }
+      
+      results.overall = {
+        actual: actualEquity,
+        expected: null,
+        difference: null
+      };
     }
 
-    // Test overall equity from flop
-    if (referenceData.expectedOverallEquity !== undefined) {
-      results.overall = this._testOverallEquity(hero, villain, board, deadCards, referenceData.expectedOverallEquity, verbose);
-    }
-
-    // Test turn cards
-    if (referenceData.turn) {
-      results.turn = this._testTurnCards(hero, villain, board, deadCards, referenceData.turn, verbose);
-    }
-
-    // Test river combinations
-    if (referenceData.river) {
-      results.river = this._testRiverCombinations(hero, villain, board, deadCards, referenceData.river, verbose);
-    }
+    // Summary removed - only show individual test results
 
     return results;
   }
 
-  _testOverallEquity(hero, villain, board, deadCards, expectedEquity, verbose) {
-    if (verbose) {
-      console.log("=".repeat(80));
-      console.log("OVERALL EQUITY FROM FLOP");
-      console.log("=".repeat(80));
-      console.log();
-    }
-
-    const result = this.bitval.simulate(1000000, 5, hero, villain, board, deadCards);
+  _testFlop(hero, villain, flopCards, deadCards, expectedEquity, tolerance, verbose, comprehensive) {
+    const result = this.bitval.simulate(1000000, 5, hero, villain, flopCards, deadCards);
     const actualEquity = this._calculateEquity(result);
     const difference = actualEquity - expectedEquity;
+    const absDifference = Math.abs(difference);
+    const roundedAbsDiff = Math.round(absDifference * 100) / 100;
+    const status = roundedAbsDiff <= tolerance ? '✓' : roundedAbsDiff <= tolerance * 2 ? '⚠' : '✗';
+    const lineColor = this._getLineColor(status, roundedAbsDiff, tolerance);
+    const failed = roundedAbsDiff > tolerance;
 
-    if (verbose) {
-      console.log(`Our Overall Equity: ${actualEquity.toFixed(2)}% (Expected: ${expectedEquity.toFixed(2)}%)`);
-      console.log(`Difference: ${difference >= 0 ? '+' : ''}${difference.toFixed(2)}%`);
-      console.log();
+    if (verbose || failed) {
+      const RESET = '\x1b[0m';
+      const flopKey = this._normalizeFlopKey(flopCards);
+      console.log(`${lineColor}  Flop: ${flopKey} - ${actualEquity.toFixed(2)}% (Expected: ${expectedEquity.toFixed(2)}%, Diff: ${difference >= 0 ? '+' : ''}${difference.toFixed(2)}%, Tol: ${tolerance.toFixed(2)}%)${RESET}`);
     }
 
     return {
       actual: actualEquity,
       expected: expectedEquity,
-      difference: difference
+      difference: difference,
+      failed: failed,
+      turns: {}
     };
   }
 
-  _testTurnCards(hero, villain, board, deadCards, turnData, verbose) {
-    if (verbose) {
-      console.log("=".repeat(80));
-      console.log("COMPARING EACH POSSIBLE TURN CARD");
-      console.log("=".repeat(80));
-      console.log();
-    }
+  _testTurn(hero, villain, flopCards, turnCard, deadCards, expectedEquity, tolerance, verbose, comprehensive, flopKey) {
+    const boardWithTurn = [...flopCards, turnCard];
+    const result = this.bitval.simulate(1000000, 5, hero, villain, boardWithTurn, deadCards);
+    const actualEquity = this._calculateEquity(result);
+    const difference = actualEquity - expectedEquity;
+    const absDifference = Math.abs(difference);
+    const roundedAbsDiff = Math.round(absDifference * 100) / 100;
+    const status = roundedAbsDiff <= tolerance ? '✓' : roundedAbsDiff <= tolerance * 2 ? '⚠' : '✗';
+    const lineColor = this._getLineColor(status, roundedAbsDiff, tolerance);
+    const failed = roundedAbsDiff > tolerance;
 
-    const allCards = this.bitval.ALL_HANDS;
-    const usedCards = new Set([...hero, ...villain, ...board, ...deadCards]);
-
-    let totalDiscrepancy = 0;
-    let testedCards = 0;
-    let maxDiscrepancy = 0;
-    let maxDiscrepancyCard = '';
-    const discrepancies = [];
-
-    for (const card of allCards.sort()) {
-      if (usedCards.has(card)) continue;
-
-      const expectedEquity = turnData[card];
-      if (expectedEquity === null || expectedEquity === undefined) continue;
-
-      // Create board with turn card
-      const boardWithTurn = [...board, card];
-
-      // Simulate with exhaustive combinations for the river (1 card left)
-      const result = this.bitval.simulate(1000000, 5, hero, villain, boardWithTurn, deadCards);
-      const total = result.win + result.lose + result.tie;
-      const actualEquity = total > 0 ? this._calculateEquity(result) : 0;
-
-      const difference = actualEquity - expectedEquity;
-      const absDifference = Math.abs(difference);
-
-      if (absDifference > maxDiscrepancy) {
-        maxDiscrepancy = absDifference;
-        maxDiscrepancyCard = card;
-      }
-
-      totalDiscrepancy += absDifference;
-      testedCards++;
-
-      if (absDifference > 0.1) {
-        discrepancies.push({
-          card: card,
-          actual: actualEquity,
-          expected: expectedEquity,
-          difference: difference
-        });
-      }
-
-      if (verbose || absDifference > 0.1) {
-        const diffStr = difference >= 0 ? `+${difference.toFixed(3)}` : difference.toFixed(3);
-        const status = absDifference < 0.5 ? '✓' : absDifference < 1.0 ? '⚠' : '✗';
-        console.log(`${card}: ${actualEquity.toFixed(3)}% (Expected: ${expectedEquity.toFixed(3)}%, Diff: ${diffStr}%) ${status}`);
-      }
-    }
-
-    const summary = {
-      tested: testedCards,
-      averageDiscrepancy: testedCards > 0 ? (totalDiscrepancy / testedCards) : 0,
-      maxDiscrepancy: maxDiscrepancy,
-      maxDiscrepancyCard: maxDiscrepancyCard
-    };
-
-    if (verbose) {
-      console.log();
-      console.log("=".repeat(80));
-      console.log("TURN CARDS SUMMARY");
-      console.log("=".repeat(80));
-      console.log(`Cards Tested: ${testedCards}`);
-      console.log(`Average Discrepancy: ${summary.averageDiscrepancy.toFixed(3)}%`);
-      console.log(`Max Discrepancy: ${maxDiscrepancy.toFixed(3)}% (Card: ${maxDiscrepancyCard})`);
-      console.log();
+    if (verbose || failed) {
+      const RESET = '\x1b[0m';
+      console.log(`${lineColor}    Turn: ${turnCard} - ${actualEquity.toFixed(2)}% (Expected: ${expectedEquity.toFixed(2)}%, Diff: ${difference >= 0 ? '+' : ''}${difference.toFixed(2)}%, Tol: ${tolerance.toFixed(2)}%)${RESET}`);
     }
 
     return {
-      tested: testedCards,
-      discrepancies: discrepancies,
-      summary: summary
+      actual: actualEquity,
+      expected: expectedEquity,
+      difference: difference,
+      failed: failed,
+      rivers: {}
     };
   }
 
-  _testRiverCombinations(hero, villain, board, deadCards, riverData, verbose) {
-    if (verbose) {
-      console.log("=".repeat(80));
-      console.log("COMPARING EACH POSSIBLE RIVER COMBINATION (TURN + RIVER)");
-      console.log("=".repeat(80));
-      console.log();
+  _testRiver(hero, villain, flopCards, turnCard, riverCard, deadCards, expectedEquity, tolerance, verbose, flopKey, turnCardKey) {
+    const completeBoard = [...flopCards, turnCard, riverCard];
+    const completeBoardMask = this.bitval.getBitMasked(completeBoard);
+    const heroMask = this.bitval.getBitMasked(hero);
+    const villainMask = this.bitval.getBitMasked(villain);
+
+    // Evaluate directly (board is complete)
+    const heroFullHand = heroMask | completeBoardMask;
+    const villainFullHand = villainMask | completeBoardMask;
+    const heroEval = this.bitval.evaluate(heroFullHand);
+    const villainEval = this.bitval.evaluate(villainFullHand);
+
+    // Determine winner
+    let actualEquity;
+    if (heroEval > villainEval) {
+      actualEquity = 100.0;
+    } else if (heroEval < villainEval) {
+      actualEquity = 0.0;
+    } else {
+      actualEquity = 50.0; // Tie
     }
 
-    const allCards = this.bitval.ALL_HANDS;
-    const usedCards = new Set([...hero, ...villain, ...board, ...deadCards]);
-    const remainingCards = allCards.filter(card => !usedCards.has(card));
+    const difference = actualEquity - expectedEquity;
+    const absDifference = Math.abs(difference);
+    const roundedAbsDiff = Math.round(absDifference * 100) / 100;
+    const status = roundedAbsDiff <= tolerance ? '✓' : roundedAbsDiff <= tolerance * 2 ? '⚠' : '✗';
+    const lineColor = this._getLineColor(status, roundedAbsDiff, tolerance);
+    const failed = roundedAbsDiff > tolerance;
 
-    // Generate all 2-card combinations
-    const combinations = [];
-    for (let i = 0; i < remainingCards.length; i++) {
-      for (let j = i + 1; j < remainingCards.length; j++) {
-        const comboKey = `${remainingCards[i]} ${remainingCards[j]}`;
-        const altComboKey = `${remainingCards[j]} ${remainingCards[i]}`;
-        combinations.push({
-          key: comboKey,
-          altKey: altComboKey,
-          cards: [remainingCards[i], remainingCards[j]]
-        });
-      }
-    }
-
-    let totalDiscrepancy = 0;
-    let testedCombos = 0;
-    let maxDiscrepancy = 0;
-    let maxDiscrepancyCombo = '';
-    const discrepancies = [];
-
-    for (const combo of combinations.sort((a, b) => a.key.localeCompare(b.key))) {
-      const expectedEquity = riverData[combo.key] || riverData[combo.altKey];
-      if (expectedEquity === null || expectedEquity === undefined) continue;
-
-      // Create complete board with turn and river
-      const completeBoard = [...board, ...combo.cards];
-      const completeBoardMask = this.bitval.getBitMasked(completeBoard);
-      const heroMask = this.bitval.getBitMasked(hero);
-      const villainMask = this.bitval.getBitMasked(villain);
-
-      // Evaluate directly (board is complete)
-      const heroFullHand = heroMask | completeBoardMask;
-      const villainFullHand = villainMask | completeBoardMask;
-      const heroEval = this.bitval.evaluate(heroFullHand);
-      const villainEval = this.bitval.evaluate(villainFullHand);
-
-      // Determine winner
-      let actualEquity;
-      if (heroEval > villainEval) {
-        actualEquity = 100.0;
-      } else if (heroEval < villainEval) {
-        actualEquity = 0.0;
-      } else {
-        actualEquity = 50.0; // Tie
-      }
-
-      const difference = actualEquity - expectedEquity;
-      const absDifference = Math.abs(difference);
-
-      if (absDifference > maxDiscrepancy) {
-        maxDiscrepancy = absDifference;
-        maxDiscrepancyCombo = combo.key;
-      }
-
-      totalDiscrepancy += absDifference;
-      testedCombos++;
-
-      if (absDifference > 0.1) {
-        discrepancies.push({
-          combo: combo.key,
-          actual: actualEquity,
-          expected: expectedEquity,
-          difference: difference
-        });
-      }
-
-      if (verbose || absDifference > 0.1) {
-        const diffStr = difference >= 0 ? `+${difference.toFixed(3)}` : difference.toFixed(3);
-        const status = absDifference < 0.1 ? '✓' : absDifference < 1.0 ? '⚠' : '✗';
-        console.log(`${combo.key}: ${actualEquity.toFixed(3)}% (Expected: ${expectedEquity.toFixed(3)}%, Diff: ${diffStr}%) ${status}`);
-      }
-    }
-
-    const summary = {
-      tested: testedCombos,
-      averageDiscrepancy: testedCombos > 0 ? (totalDiscrepancy / testedCombos) : 0,
-      maxDiscrepancy: maxDiscrepancy,
-      maxDiscrepancyCombo: maxDiscrepancyCombo
-    };
-
-    if (verbose) {
-      console.log();
-      console.log("=".repeat(80));
-      console.log("RIVER COMBINATIONS SUMMARY");
-      console.log("=".repeat(80));
-      console.log(`Combinations Tested: ${testedCombos}`);
-      console.log(`Average Discrepancy: ${summary.averageDiscrepancy.toFixed(3)}%`);
-      console.log(`Max Discrepancy: ${maxDiscrepancy.toFixed(3)}% (Combo: ${maxDiscrepancyCombo})`);
-      console.log();
+    if (verbose || failed) {
+      const RESET = '\x1b[0m';
+      console.log(`${lineColor}      River: ${riverCard} - ${actualEquity.toFixed(2)}% (Expected: ${expectedEquity.toFixed(2)}%, Diff: ${difference >= 0 ? '+' : ''}${difference.toFixed(2)}%, Tol: ${tolerance.toFixed(2)}%)${RESET}`);
     }
 
     return {
-      tested: testedCombos,
-      discrepancies: discrepancies,
-      summary: summary
+      actual: actualEquity,
+      expected: expectedEquity,
+      difference: difference,
+      failed: failed
     };
   }
 
@@ -274,16 +260,6 @@ class BitValDebugger {
     // Pokercruncher convention: ties divided by 2 and added to wins
     return ((result.win + result.tie / 2) / total * 100);
   }
-
-  _formatOutput(card, actualEquity, expectedEquity, verbose) {
-    if (!verbose) return;
-    const difference = actualEquity - expectedEquity;
-    const diffStr = difference >= 0 ? `+${difference.toFixed(3)}` : difference.toFixed(3);
-    const absDifference = Math.abs(difference);
-    const status = absDifference < 0.5 ? '✓' : absDifference < 1.0 ? '⚠' : '✗';
-    console.log(`${card}: ${actualEquity.toFixed(3)}% (Expected: ${expectedEquity.toFixed(3)}%, Diff: ${diffStr}%) ${status}`);
-  }
 }
 
 if (typeof module !== 'undefined') module.exports = BitValDebugger;
-

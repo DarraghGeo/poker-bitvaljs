@@ -6,8 +6,8 @@ const testCases = require("./bitval_test_cases.js");
 const bitval = new BitVal();
 const bitvalDebugger = new BitValDebugger(bitval);
 
-// Example 1: Run a single test case with verbose output
-console.log("EXAMPLE 1: Single Test Case (Verbose)");
+// Example 1: Run a single test case with verbose output (incremental mode)
+console.log("EXAMPLE 1: Single Test Case (Verbose, Incremental)");
 console.log("=".repeat(80));
 const testCase = testCases[0];
 const results = bitvalDebugger.compare(
@@ -15,26 +15,28 @@ const results = bitvalDebugger.compare(
   testCase.villain,
   testCase.board,
   testCase.deadCards,
-  testCase.referenceData,
-  true  // verbose = true
+  { overallEquity: testCase.overallEquity, ...testCase.referenceData },
+  true,  // verbose = true
+  false  // comprehensive = false (incremental mode)
 );
 
-// Example 2: Run a single test case with non-verbose output (only discrepancies)
+// Example 2: Run a single test case with comprehensive mode
 console.log("\n\n");
-console.log("EXAMPLE 2: Single Test Case (Non-Verbose)");
+console.log("EXAMPLE 2: Single Test Case (Comprehensive Mode)");
 console.log("=".repeat(80));
 const results2 = bitvalDebugger.compare(
   testCase.hero,
   testCase.villain,
   testCase.board,
   testCase.deadCards,
-  testCase.referenceData,
-  false  // verbose = false
+  { overallEquity: testCase.overallEquity, ...testCase.referenceData },
+  true,  // verbose = true
+  true   // comprehensive = true (test everything)
 );
 
 // Example 3: Iterate through all test cases
 console.log("\n\n");
-console.log("EXAMPLE 3: Running All Test Cases");
+console.log("EXAMPLE 3: Running All Test Cases (Incremental Mode)");
 console.log("=".repeat(80));
 console.log();
 
@@ -47,59 +49,58 @@ testCases.forEach((testCase, index) => {
     testCase.villain,
     testCase.board,
     testCase.deadCards,
-    testCase.referenceData,
-    false  // Set to true for verbose output
+    { overallEquity: testCase.overallEquity, ...testCase.referenceData },
+    false,  // verbose = false
+    false   // comprehensive = false (incremental mode)
   );
 
-  // Print summary of discrepancies
-  if (results.turn.discrepancies.length > 0) {
-    console.log(`Turn Cards - ${results.turn.discrepancies.length} discrepancies found:`);
-    results.turn.discrepancies.forEach(d => {
-      console.log(`  ${d.card}: ${d.actual.toFixed(2)}% vs ${d.expected.toFixed(2)}% (diff: ${d.difference >= 0 ? '+' : ''}${d.difference.toFixed(2)}%)`);
-    });
-  }
-
-  if (results.river.discrepancies.length > 0) {
-    console.log(`River Combinations - ${results.river.discrepancies.length} discrepancies found:`);
-    results.river.discrepancies.slice(0, 10).forEach(d => {  // Show first 10
-      console.log(`  ${d.combo}: ${d.actual.toFixed(2)}% vs ${d.expected.toFixed(2)}% (diff: ${d.difference >= 0 ? '+' : ''}${d.difference.toFixed(2)}%)`);
-    });
-    if (results.river.discrepancies.length > 10) {
-      console.log(`  ... and ${results.river.discrepancies.length - 10} more`);
+  // Print overall equity result
+  if (results.overall) {
+    if (results.overall.expected !== null && results.overall.expected !== undefined) {
+      const tolerance = testCase.board.length === 0 ? 1.5 : 0;
+      const diff = Math.abs(results.overall.difference);
+      const roundedDiff = Math.round(diff * 100) / 100;
+      const status = roundedDiff <= tolerance ? '✓' : '✗';
+      const GREEN = '\x1b[32m';
+      const BRIGHT_RED = '\x1b[91m';
+      const RESET = '\x1b[0m';
+      const lineColor = status === '✓' ? GREEN : BRIGHT_RED;
+      console.log(`${lineColor}Overall Equity: ${results.overall.actual.toFixed(2)}% (Expected: ${results.overall.expected.toFixed(2)}%, Diff: ${results.overall.difference >= 0 ? '+' : ''}${results.overall.difference.toFixed(2)}%, Tol: ${tolerance.toFixed(2)}%)${RESET}`);
+    } else {
+      console.log(`Overall Equity: ${results.overall.actual.toFixed(2)}% (no reference data)`);
     }
   }
 
-  if (results.overall) {
-    console.log(`Overall Equity: ${results.overall.actual.toFixed(2)}% vs ${results.overall.expected.toFixed(2)}% (diff: ${results.overall.difference >= 0 ? '+' : ''}${results.overall.difference.toFixed(2)}%)`);
+  // Print flop/turn/river summary
+  if (results.summary) {
+    if (results.summary.flopsFailed > 0 || results.summary.turnsFailed > 0 || results.summary.riversFailed > 0) {
+      console.log(`⚠ Failures - Flops: ${results.summary.flopsFailed}, Turns: ${results.summary.turnsFailed}, Rivers: ${results.summary.riversFailed}`);
+    }
   }
 });
 
-// Example 4: Custom test case (not from library)
+// Example 4: Custom test case with hierarchical structure
 console.log("\n\n");
-console.log("EXAMPLE 4: Custom Test Case");
+console.log("EXAMPLE 4: Custom Test Case (Hierarchical Structure)");
 console.log("=".repeat(80));
 
 const customReferenceData = {
-  turn: {
-    '7d': 72.73,
-    '7h': 72.73,
-    'Tc': 86.36,
-    'Td': 86.36
-  },
-  river: {
-    '7d 2c': 100.0,
-    '7d 2d': 100.0,
-    '7h 2c': 100.0,
-    '7h 2d': 100.0
-  }
+  overallEquity: 15.16,
+  "As Jc Ts": [16.06, {
+    '7d': [72.73, {
+      '2c': [100.0],
+      '2d': [100.0]
+    }],
+    'Tc': [86.36, {}]
+  }]
 };
 
 const customResults = bitvalDebugger.compare(
   ['Th', '7c'],
   ['Qs', 'Qh'],
-  ['As', 'Ts', 'Jc'],
+  [],
   [],
   customReferenceData,
-  true
+  true,
+  false  // incremental mode
 );
-
