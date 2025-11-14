@@ -133,11 +133,23 @@ class BitVal{
     let numberOfCardsToDeal = (numberOfBoardCards + 2) - (hero.length + board.length);
     this.xorShift = new XorShift32();
 
-    deadCards = this.getBitMasked([...hero,...villain,...board,...deadCards]);
+    const allDeadCards = [...hero, ...villain, ...board, ...deadCards];
+    deadCards = this.getBitMasked(allDeadCards);
     numberOfCardsToDeal = numberOfBoardCards - board.length;
     hero = this.getBitMasked(hero);
     villain = this.getBitMasked(villain);
     board = this.getBitMasked(board);
+
+    const availableCards = 52 - new Set(allDeadCards).size;
+    const exhaustiveCombinations = this.combinations(availableCards, numberOfCardsToDeal);
+    iterations = Math.min(iterations, exhaustiveCombinations);
+
+    const isExhaustive = iterations === exhaustiveCombinations && numberOfCardsToDeal > 0 && numberOfCardsToDeal <= 2;
+    let comboArray = null;
+    if (isExhaustive) {
+      const availableMasks = this._getAvailableCardMasks(deadCards);
+      comboArray = this._getCombinations(availableMasks, numberOfCardsToDeal);
+    }
 
     let result = { 
       "win": 0,           "tie": 0,         "lose": 0, 
@@ -147,13 +159,15 @@ class BitVal{
     };
 
     for (let i = 0; i < iterations; i++){
-      let _board = this.deal(board, deadCards, numberOfCardsToDeal) | board;
+      let _board = isExhaustive && comboArray 
+        ? board | comboArray[i]
+        : this.deal(board, deadCards, numberOfCardsToDeal) | board;
 
       let hero_eval = this.evaluate(hero | _board);
-      let villain_eval = this.compare(villain | _board, hero_eval);
+      let villain_eval = this.evaluate(villain | _board);
 
 
-      this.debugString(hero, hero_eval, villain, villain_eval, _board);
+      //this.debugString(hero, hero_eval, villain, villain_eval, _board);
       //this.debug(hero, villain, hero_eval, villain_eval);
 
       if (hero_eval > villain_eval){
@@ -165,7 +179,6 @@ class BitVal{
         continue;
       }
       result["tie"]++
-
     }
     
     return result;
@@ -336,6 +349,41 @@ class BitVal{
     return count;
   }
 
+  combinations(n, k){
+    if (k > n || k < 0) return 0;
+    if (k === 0 || k === n) return 1;
+    k = Math.min(k, n - k);
+    let result = 1;
+    for (let i = 0; i < k; i++) {
+      result = result * (n - i) / (i + 1);
+    }
+    return Math.floor(result);
+  }
+
+  _getAvailableCardMasks(deadCards){
+    let masks = [];
+    let deck = ~deadCards;
+    for (let i = 0; i < 52; i++) {
+      let card = 1n << BigInt(i);
+      if (card & deck) masks.push(card);
+    }
+    return masks;
+  }
+
+  _getCombinations(availableMasks, k){
+    if (k === 1) return availableMasks;
+    if (k === 2) {
+      let combos = [];
+      for (let i = 0; i < availableMasks.length; i++) {
+        for (let j = i + 1; j < availableMasks.length; j++) {
+          combos.push(availableMasks[i] | availableMasks[j]);
+        }
+      }
+      return combos;
+    }
+    return [];
+  }
+
 
 
   /**
@@ -378,14 +426,24 @@ class BitVal{
     }
 
     if (response = trips){
-      return response | this.TRIPS_SCORE;
+      return (response | this.TRIPS_SCORE) | this.normalize(hand);
     }
 
     if (response = pairs) {
       if (this.countBits(response) > 1){
-        return  response | this.TWO_PAIRS_SCORE;
+        let pairRanksMask = response | (response << 1n) | (response << 2n) | (response << 3n);
+        let kickersOnly = hand & ~pairRanksMask;
+        let highestKicker = 0n;
+        for (let i = 12n; i >= 0n; i--) {
+          let rankMask = (this.BIT_1 << (i * 4n)) | (this.BIT_2 << (i * 4n)) | (this.BIT_3 << (i * 4n)) | (this.BIT_4 << (i * 4n));
+          if (kickersOnly & rankMask) {
+            highestKicker = 1n << i;
+            break;
+          }
+        }
+        return (response | this.TWO_PAIRS_SCORE) | highestKicker;
       }
-      return  response | this.PAIR_SCORE;
+      return (response | this.PAIR_SCORE) | this.normalize(hand);
     }
 
     return this.normalize(hand);
@@ -450,7 +508,7 @@ class BitVal{
       ((this.BIT_2 & hand) << 1n) & (this.BIT_3 & hand) | // 0110
       ((this.BIT_2 & hand) << 2n) & (this.BIT_4 & hand) | // 0101
       ((this.BIT_3 & hand) << 1n) & (this.BIT_4 & hand)); // 0011
-    return ((pairs >> 1n | pairs >> 2n | pairs >> 3n) & this.BIT_1);
+    return ((pairs >> 1n | pairs >> 2n | pairs >> 3n) & this.BIT_1) & ~1n;
   }
 
   _bitTrips(hand){ 
@@ -458,7 +516,7 @@ class BitVal{
     let b = (((this.BIT_2 & hand) << 1n & (this.BIT_3 & hand)) << 1n & (this.BIT_4 & hand)) >> 3n ; // 1110
     let c = (((this.BIT_1 & hand) << 2n & (this.BIT_3 & hand)) << 1n & (this.BIT_4 & hand)) >> 3n ; // 1101
     let d = (((this.BIT_1 & hand) << 1n & (this.BIT_2 & hand)) << 2n & (this.BIT_4 & hand)) >> 3n; // 1011
-    return (a | b | c | d) & this.BIT_1;
+    return ((a | b | c | d) & this.BIT_1) & ~1n;
   }
 
   _bitFlush(hand){
