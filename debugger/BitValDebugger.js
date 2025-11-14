@@ -272,13 +272,17 @@ class BitValDebugger {
 
   /**
    * Format bitmask with spaces every 4 bits for readability
-   * @param {BigInt} bitmask - The bitmask to format
-   * @returns {string} - Formatted bitmask string with spaces every 4 bits
+   * @param {BigInt|Array} bitmask - The bitmask to format (may be array [eval, tiebreaker] or BigInt)
+   * @returns {string} - Formatted bitmask string with spaces every 4 bits, padded to 64 bits
    */
   _formatBitmask(bitmask) {
-    const binary = bitmask.toString(2);
-    // Pad to multiple of 4 for clean grouping
-    const padded = binary.padStart(Math.ceil(binary.length / 4) * 4, '0');
+    // Handle array return from evaluate() [eval, tiebreaker]
+    const evalValue = Array.isArray(bitmask) ? bitmask[0] : bitmask;
+    
+    // Convert to binary and pad to 64 bits for full display
+    const binary = evalValue.toString(2);
+    const padded = binary.padStart(64, '0');
+    
     // Split into groups of 4 and join with spaces
     return padded.match(/.{1,4}/g).join(' ');
   }
