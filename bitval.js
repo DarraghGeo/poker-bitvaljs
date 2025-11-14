@@ -139,6 +139,26 @@ class BitVal{
       67553994410557455n      // Rank 12 (Ace - both high and low bits)
     ];
 
+    // Precomputed lookup: bitmask (single rank at position rank*4+4) -> RANK_MASKS[rank]
+    // Maps directly from _bitTrips/_bitQuads/_bitPairs result to rank mask
+    // Fast O(1) lookup with no loops or conditionals
+    this.RANK_MASK_LOOKUP = {
+      16n: 240n,                    // rank 0 (2) - bit 4
+      256n: 3840n,                  // rank 1 (3) - bit 8
+      4096n: 61440n,                // rank 2 (4) - bit 12
+      65536n: 983040n,              // rank 3 (5) - bit 16
+      1048576n: 15728640n,          // rank 4 (6) - bit 20
+      16777216n: 251658240n,        // rank 5 (7) - bit 24
+      268435456n: 4026531840n,      // rank 6 (8) - bit 28
+      4294967296n: 64424509440n,    // rank 7 (9) - bit 32
+      68719476736n: 1030792151040n, // rank 8 (T) - bit 36
+      1099511627776n: 16492674416640n, // rank 9 (J) - bit 40
+      17592186044416n: 263882790666240n, // rank 10 (Q) - bit 44
+      281474976710656n: 4222124650659840n, // rank 11 (K) - bit 48
+      4503599627370496n: 67553994410557455n, // rank 12 (A) - bit 52 (trips/pairs)
+      1n: 67553994410557455n        // rank 12 (A) - bit 0 (quads - low Ace)
+    };
+
   }
 
 
@@ -183,8 +203,8 @@ class BitVal{
         ? board | comboArray[i]
         : this.deal(board, deadCards, numberOfCardsToDeal) | board;
 
-      let hero_eval = this.evaluate(hero | _board);
-      let villain_eval = this.evaluate(villain | _board);
+      let [hero_eval, hero_tiebreaker] = this.evaluate(hero | _board);
+      let [villain_eval, villain_tiebreaker] = this.evaluate(villain | _board);
 
 
       //this.debugString(hero, hero_eval, villain, villain_eval, _board);
@@ -198,6 +218,16 @@ class BitVal{
         result["lose"]++;
         continue;
       }
+
+      if (hero_tiebreaker > villain_tiebreaker){
+        result["win"]++;
+        continue;
+      }
+      if (hero_tiebreaker < villain_tiebreaker){
+        result["lose"]++;
+        continue;
+      }
+
       result["tie"]++
     }
     
@@ -312,6 +342,38 @@ class BitVal{
     }
     
     return kickerValue;
+  }
+
+  /**
+   * Fast lookup to convert bitmask (from _bitTrips/_bitQuads/_bitPairs) to rank mask
+   * Handles Ace quads special case (both bit 0 and bit 52) without conditionals
+   * @param {BigInt} bitmask - Bitmask from _bitTrips, _bitQuads, or _bitPairs
+   * @returns {BigInt} - RANK_MASKS value for the rank(s) in the bitmask
+   */
+  _getRankMaskFromBitmask(bitmask) {
+    // Handle Ace quads (both bit 0 and bit 52) and normal cases
+    // Uses bitwise operations - no conditionals, no loops
+    return (this.RANK_MASK_LOOKUP[bitmask & 1n] || 0n) | 
+           (this.RANK_MASK_LOOKUP[bitmask & (1n << 52n)] || 0n) | 
+           (this.RANK_MASK_LOOKUP[bitmask] || 0n);
+  }
+
+  /**
+   * Get combined rank mask for two pair (handles multiple ranks)
+   * @param {BigInt} pairsBitmask - Bitmask from _bitPairs with multiple bits set
+   * @returns {BigInt} - Combined RANK_MASKS for all pair ranks
+   */
+  _getTwoPairRanksMask(pairsBitmask) {
+    // Extract first rank bit (lowest set bit)
+    const firstBit = pairsBitmask & -pairsBitmask;
+    const firstMask = this._getRankMaskFromBitmask(firstBit);
+    
+    // Extract second rank bit (remove first, then get lowest)
+    const remaining = pairsBitmask & ~firstBit;
+    const secondBit = remaining & -remaining;
+    const secondMask = this._getRankMaskFromBitmask(secondBit);
+    
+    return firstMask | secondMask;
   }
 
   /**
@@ -464,52 +526,52 @@ class BitVal{
 
     let response = 0n;
     if (response = this._bitStraightFlush(hand)){ 
-      return response | this.STRAIGHT_FLUSH_SCORE;
+      return [response | this.STRAIGHT_FLUSH_SCORE, null];
     }
 
     if (response = this._bitQuads(hand)){
       // Extract highest kicker (quads use 4 cards, need 1 kicker)
-      let quadsRanksMask = response | (response << 1n) | (response << 2n) | (response << 3n);
+      let quadsRanksMask = this._getRankMaskFromBitmask(response);
       let kickers = this._extractKickers(hand, quadsRanksMask, 1);
-      return (response | this.QUADS_SCORE) | kickers;
+      return [(response | this.QUADS_SCORE) | kickers, null];
     }
 
     let trips = this._bitTrips(hand);
     let pairs = this._bitPairs(hand);
 
     if ((trips && pairs && trips ^ pairs) || this.countBits(trips) > 1){
-      return trips | pairs | this.FULL_HOUSE_SCORE;
+      return [trips | pairs | this.FULL_HOUSE_SCORE, trips];
     }
 
     if (response = this._bitFlush(hand)){
-      return response | this.FLUSH_SCORE;
+      return [response | this.FLUSH_SCORE, null];
     }
 
     if (response = this._bitStraight(hand)){
-      return response | this.STRAIGHT_SCORE;
+      return [response | this.STRAIGHT_SCORE, null];
     }
 
     if (response = trips){
       // Extract 2 kickers (trips use 3 cards, need 2 kickers)
-      let tripsRanksMask = response | (response << 1n) | (response << 2n) | (response << 3n);
+      let tripsRanksMask = this._getRankMaskFromBitmask(response);
       let kickers = this._extractKickers(hand, tripsRanksMask, 2);
-      return (response | this.TRIPS_SCORE) | kickers;
+      return [(response | this.TRIPS_SCORE) | kickers, null];
     }
 
     if (response = pairs) {
       if (this.countBits(response) > 1){
         // Two Pair: Extract 1 kicker (two pairs use 4 cards, need 1 kicker)
-        let pairRanksMask = response | (response << 1n) | (response << 2n) | (response << 3n);
+        let pairRanksMask = this._getTwoPairRanksMask(response);
         let kickers = this._extractKickers(hand, pairRanksMask, 1);
-        return (response | this.TWO_PAIRS_SCORE) | kickers;
+        return [(response | this.TWO_PAIRS_SCORE) | kickers, null];
       }
       // Pair: Extract 3 kickers (pair uses 2 cards, need 3 kickers)
-      let pairRanksMask = response | (response << 1n) | (response << 2n) | (response << 3n);
+      let pairRanksMask = this._getRankMaskFromBitmask(response);
       let kickers = this._extractKickers(hand, pairRanksMask, 3);
-      return (response | this.PAIR_SCORE) | kickers;
+      return [(response | this.PAIR_SCORE) | kickers, null];
     }
 
-    return this.normalize(hand);
+    return [this.normalize(hand), null];
 
   }
 

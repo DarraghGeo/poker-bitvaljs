@@ -244,6 +244,22 @@ class BitValDebugger {
     if (verbose || failed) {
       const RESET = '\x1b[0m';
       console.log(`${lineColor}      River: ${riverCard} - ${actualEquity.toFixed(2)}% (Expected: ${expectedEquity.toFixed(2)}%, Diff: ${difference >= 0 ? '+' : ''}${difference.toFixed(2)}%, Tol: ${tolerance.toFixed(2)}%)${RESET}`);
+      
+      // Show bitmasks when test fails
+      if (failed) {
+        const heroHandStr = `[${[...hero, ...completeBoard].join(' ')}]`;
+        const villainHandStr = `[${[...villain, ...completeBoard].join(' ')}]`;
+        const heroEvalStr = this._formatBitmask(heroEval);
+        const villainEvalStr = this._formatBitmask(villainEval);
+        
+        // Align bitmasks by padding the hand strings to the same length
+        const maxHandLen = Math.max(heroHandStr.length, villainHandStr.length);
+        const paddedHeroHand = heroHandStr.padEnd(maxHandLen);
+        const paddedVillainHand = villainHandStr.padEnd(maxHandLen);
+        
+        console.log(`\x1b[37m${paddedHeroHand} ${heroEvalStr}\x1b[0m`);
+        console.log(`\x1b[37m${paddedVillainHand} ${villainEvalStr}\x1b[0m`);
+      }
     }
 
     return {
@@ -252,6 +268,19 @@ class BitValDebugger {
       difference: difference,
       failed: failed
     };
+  }
+
+  /**
+   * Format bitmask with spaces every 4 bits for readability
+   * @param {BigInt} bitmask - The bitmask to format
+   * @returns {string} - Formatted bitmask string with spaces every 4 bits
+   */
+  _formatBitmask(bitmask) {
+    const binary = bitmask.toString(2);
+    // Pad to multiple of 4 for clean grouping
+    const padded = binary.padStart(Math.ceil(binary.length / 4) * 4, '0');
+    // Split into groups of 4 and join with spaces
+    return padded.match(/.{1,4}/g).join(' ');
   }
 
   _calculateEquity(result) {

@@ -1,0 +1,159 @@
+{
+  "hero": [
+    "As",
+    "Kc"
+  ],
+  "villain": [
+    "8h",
+    "Qh"
+  ],
+  "totalFlops": 100,
+  "discrepanciesFound": 12,
+  "tolerance": 0.5,
+  "discrepancies": [
+    {
+      "flop": "Ad Ah Qs",
+      "referenceEquity": 96.26262626262626,
+      "bitvalEquity": 91.71717171717172,
+      "difference": 4.5454545454545325,
+      "outcomes": {
+        "heroWins": 953,
+        "villainWins": 37,
+        "ties": 0,
+        "total": 990
+      }
+    },
+    {
+      "flop": "Ad Ah Qd",
+      "referenceEquity": 96.26262626262626,
+      "bitvalEquity": 91.71717171717172,
+      "difference": 4.5454545454545325,
+      "outcomes": {
+        "heroWins": 953,
+        "villainWins": 37,
+        "ties": 0,
+        "total": 990
+      }
+    },
+    {
+      "flop": "Ad Ah Qc",
+      "referenceEquity": 96.26262626262626,
+      "bitvalEquity": 91.71717171717172,
+      "difference": 4.5454545454545325,
+      "outcomes": {
+        "heroWins": 953,
+        "villainWins": 37,
+        "ties": 0,
+        "total": 990
+      }
+    },
+    {
+      "flop": "8s Ad Ah",
+      "referenceEquity": 96.26262626262626,
+      "bitvalEquity": 91.71717171717172,
+      "difference": 4.5454545454545325,
+      "outcomes": {
+        "heroWins": 953,
+        "villainWins": 37,
+        "ties": 0,
+        "total": 990
+      }
+    },
+    {
+      "flop": "8d Ad Ah",
+      "referenceEquity": 96.26262626262626,
+      "bitvalEquity": 91.71717171717172,
+      "difference": 4.5454545454545325,
+      "outcomes": {
+        "heroWins": 953,
+        "villainWins": 37,
+        "ties": 0,
+        "total": 990
+      }
+    },
+    {
+      "flop": "8c Ad Ah",
+      "referenceEquity": 96.26262626262626,
+      "bitvalEquity": 91.71717171717172,
+      "difference": 4.5454545454545325,
+      "outcomes": {
+        "heroWins": 953,
+        "villainWins": 37,
+        "ties": 0,
+        "total": 990
+      }
+    },
+    {
+      "flop": "Ac Ah Qs",
+      "referenceEquity": 96.26262626262626,
+      "bitvalEquity": 91.71717171717172,
+      "difference": 4.5454545454545325,
+      "outcomes": {
+        "heroWins": 953,
+        "villainWins": 37,
+        "ties": 0,
+        "total": 990
+      }
+    },
+    {
+      "flop": "Ac Ah Qd",
+      "referenceEquity": 96.26262626262626,
+      "bitvalEquity": 91.71717171717172,
+      "difference": 4.5454545454545325,
+      "outcomes": {
+        "heroWins": 953,
+        "villainWins": 37,
+        "ties": 0,
+        "total": 990
+      }
+    },
+    {
+      "flop": "Ac Ah Qc",
+      "referenceEquity": 96.26262626262626,
+      "bitvalEquity": 91.71717171717172,
+      "difference": 4.5454545454545325,
+      "outcomes": {
+        "heroWins": 953,
+        "villainWins": 37,
+        "ties": 0,
+        "total": 990
+      }
+    },
+    {
+      "flop": "8s Ac Ah",
+      "referenceEquity": 96.26262626262626,
+      "bitvalEquity": 91.71717171717172,
+      "difference": 4.5454545454545325,
+      "outcomes": {
+        "heroWins": 953,
+        "villainWins": 37,
+        "ties": 0,
+        "total": 990
+      }
+    },
+    {
+      "flop": "8d Ac Ah",
+      "referenceEquity": 96.26262626262626,
+      "bitvalEquity": 91.71717171717172,
+      "difference": 4.5454545454545325,
+      "outcomes": {
+        "heroWins": 953,
+        "villainWins": 37,
+        "ties": 0,
+        "total": 990
+      }
+    },
+    {
+      "flop": "8c Ac Ah",
+      "referenceEquity": 96.26262626262626,
+      "bitvalEquity": 91.71717171717172,
+      "difference": 4.5454545454545325,
+      "outcomes": {
+        "heroWins": 953,
+        "villainWins": 37,
+        "ties": 0,
+        "total": 990
+      }
+    }
+  ]
+}
