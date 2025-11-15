@@ -1,4 +1,4 @@
-const BitVal = require("../bitval.js");
+const BitVal = require("./bitval.js");
 const evaluator = require("poker-evaluator");
 const fs = require("fs");
 const path = require("path");
@@ -1744,9 +1744,9 @@ class BitvalDebug {
 
 // Run main if executed directly
 if (require.main === module) {
-  const bitvalDebug = new bitvalDebug();
-  evalDebug.main();
+  const bitvalDebug = new BitvalDebug();
+  bitvalDebug.main();
 }
 
-module.exports = bitvalDebug;
+module.exports = BitvalDebug;
 
