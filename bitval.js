@@ -186,7 +186,7 @@ class BitVal {
       comboArray = this._getCombinations(availableMasks, numberOfCardsToDeal);
     }
 
-    let result = {
+    let result = { 
       "win": 0,
       "tie": 0,
       "lose": 0,
@@ -228,7 +228,7 @@ class BitVal {
 
       result["tie"]++
     }
-
+    
     return result;
   }
 
@@ -401,7 +401,7 @@ class BitVal {
         let pairRanksMask = this._getTwoPairRanksMask(response);
         let kickers = this._extractKickers(hand, pairRanksMask, 1);
         return [(response | this.TWO_PAIRS_SCORE), kickers];
-      }
+    }
       let pairRanksMask = this._getRankMaskFromBitmask(response);
       let kickers = this._extractKickers(hand, pairRanksMask, 3);
       return [(response | this.PAIR_SCORE), kickers];
@@ -411,7 +411,7 @@ class BitVal {
   }
 
   _bitPairs(hand) {
-    let pairs = (
+    let pairs = ( 
       ((this.BIT_1 & hand) << 1n) & (this.BIT_2 & hand) |
       ((this.BIT_1 & hand) << 2n) & (this.BIT_3 & hand) |
       ((this.BIT_1 & hand) << 3n) & (this.BIT_4 & hand) |
@@ -444,10 +444,10 @@ class BitVal {
   _bitStraight(hand) {
     hand = (hand | hand >> 1n | hand >> 2n | hand >> 3n) & this.BIT_1;
 
-    hand = hand &
-      (hand << 4n) &
-      (hand << 8n) &
-      (hand << 12n) &
+    hand = hand & 
+      (hand << 4n) & 
+      (hand << 8n) & 
+      (hand << 12n) & 
       (hand << 16n);
 
     return this.stripBits(hand, 1);
@@ -463,13 +463,71 @@ class BitVal {
   }
 
   _bitStraightFlush(hand) {
-    hand = hand &
-      (hand << 4n) &
-      (hand << 8n) &
-      (hand << 12n) &
+    hand = hand & 
+      (hand << 4n) & 
+      (hand << 8n) & 
+      (hand << 12n) & 
       (hand << 16n);
 
     return this.stripBits(hand, 1);
+  }
+
+  _getCanonicalKey(hand) {
+    const rankOrder = 'AKQJT98765432';
+    const r1 = hand[0], r2 = hand[2], s1 = hand[1], s2 = hand[3];
+    const r1Idx = rankOrder.indexOf(r1), r2Idx = rankOrder.indexOf(r2);
+    const high = r1Idx < r2Idx ? r1 : r2, low = r1Idx < r2Idx ? r2 : r1;
+    if (r1 === r2) return high + 'h' + low + 'c';
+    if (s1 === s2) return high + 's' + low + 's';
+    return high + 's' + low + 'h';
+  }
+
+  _flattenHandsToCanonical(hands) {
+    const canonicalMap = new Map();
+    for (const hand of hands) {
+      const key = this._getCanonicalKey(hand);
+      canonicalMap.set(key, (canonicalMap.get(key) || 0) + 1);
+    }
+    return canonicalMap;
+  }
+
+  _handStringToCards(hand) {
+    return [hand.substring(0, 2), hand.substring(2, 4)];
+  }
+
+  _simulateMatchup(heroHand, villainHand, board, deadCards, numberOfBoardCards, iterations) {
+    const heroCards = this._handStringToCards(heroHand);
+    const villainCards = this._handStringToCards(villainHand);
+    return this.simulate(iterations, numberOfBoardCards, heroCards, villainCards, board, deadCards);
+  }
+
+  compareRange(heroHands, villainHands, boardCards = [], deadCards = [], numberOfBoardCards = 5, iterations = 10000, optimize = true) {
+    let win = 0, tie = 0, lose = 0;
+    if (!optimize) {
+      for (const h of heroHands) {
+        for (const v of villainHands) {
+          const r = this._simulateMatchup(h, v, boardCards, deadCards, numberOfBoardCards, iterations);
+          win += r.win; tie += r.tie; lose += r.lose;
+        }
+      }
+      return { win, tie, lose };
+    }
+    const hCanon = this._flattenHandsToCanonical(heroHands);
+    const vCanon = this._flattenHandsToCanonical(villainHands);
+    const cache = new Map();
+    for (const [hk, hm] of hCanon) {
+      for (const [vk, vm] of vCanon) {
+        const ck = hk + vk;
+        let r = cache.get(ck);
+        if (!r) {
+          r = this._simulateMatchup(hk, vk, boardCards, deadCards, numberOfBoardCards, iterations);
+          cache.set(ck, r);
+        }
+        const m = hm * vm;
+        win += r.win * m; tie += r.tie * m; lose += r.lose * m;
+      }
+    }
+    return { win, tie, lose };
   }
 }
 

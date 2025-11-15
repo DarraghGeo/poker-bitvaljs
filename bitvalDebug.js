@@ -11,7 +11,13 @@ class BitvalDebug {
     this.suits = ['s', 'h', 'd', 'c'];
     this.ranks = ['A', 'K', 'Q', 'J', 'T', '9', '8', '7', '6', '5', '4', '3', '2'];
     this.lastProgressUpdate = 0;
-    this.progressUpdateInterval = 50; // Update every 50ms
+    this.progressUpdateInterval = 50;
+    this.startupTests = [
+      { hero: ['As', '2s'], villain: ['8h', '9c'], expectedEquity: 57.76 },
+      { hero: ['As', '2s'], villain: ['Kh', '9c'], expectedEquity: 61.17 },
+      { hero: ['As', 'Ks'], villain: ['5d', '6d'], expectedEquity: 60.38 },
+      { hero: ['As', 'Ks'], villain: ['6c', '6d'], expectedEquity: 47.88 }
+    ];
   }
 
   // ============================================================================
@@ -34,7 +40,8 @@ class BitvalDebug {
       retestClean: false,
       dissect: null,
       list: null,
-      help: false
+      help: false,
+      optimize: false
     };
   }
 
@@ -60,9 +67,16 @@ class BitvalDebug {
     } else if (arg === "--clean") {
       args.retestClean = true;
     } else if (arg === "--dissect") {
-      args.dissect = this.getNextIntArg(i);
+      const nextArg = i + 1 < process.argv.length ? process.argv[i + 1] : null;
+      if (nextArg && !nextArg.startsWith('--') && isNaN(parseInt(nextArg, 10))) {
+        args.dissect = nextArg;
+      } else {
+        args.dissect = this.getNextIntArg(i);
+      }
     } else if (arg === "--list") {
       args.list = this.getListArg(i);
+    } else if (arg.startsWith("--optimize=")) {
+      args.optimize = arg.split("=")[1] === "true";
     }
   }
 
@@ -152,7 +166,7 @@ class BitvalDebug {
   // Equity Calculations
   // ============================================================================
 
-  calculateEquityBitval(hero, villain, board, iterations = 1) {
+  calculateEquityBitval(hero, villain, board, iterations = 1, optimize = false) {
     if (board.length === 5) {
       return this.calculateCompleteBoardEquity(hero, villain, board);
     }
@@ -162,7 +176,7 @@ class BitvalDebug {
     if (board.length === 4) {
       return this.calculateTurnEquity(hero, villain, board);
     }
-    return this.calculatePreflopEquity(hero, villain, iterations);
+    return this.calculatePreflopEquity(hero, villain, iterations, optimize);
   }
 
   calculateCompleteBoardEquity(hero, villain, board) {
@@ -223,7 +237,13 @@ class BitvalDebug {
     return ((heroWins + ties / 2) / total) * 100;
   }
 
-  calculatePreflopEquity(hero, villain, iterations) {
+  calculatePreflopEquity(hero, villain, iterations, optimize = false) {
+    if (optimize) {
+      const heroHand = hero[0] + hero[1];
+      const villainHand = villain[0] + villain[1];
+      const result = this.bitval.compareRange([heroHand], [villainHand], [], [], 5, iterations, true);
+      return ((result.win + result.tie / 2) / (result.win + result.lose + result.tie)) * 100;
+    }
     const result = this.bitval.simulate(iterations, 5, hero, villain, [], []);
     return ((result.win + result.tie / 2) / (result.win + result.lose + result.tie)) * 100;
   }
@@ -525,12 +545,89 @@ class BitvalDebug {
   }
 
   // ============================================================================
+  // Startup Tests
+  // ============================================================================
+
+  runStartupTests(optimize = false) {
+    console.log("Running startup tests...");
+    const tolerance = 0.01;
+    const iterations = 10000;
+    let allPassed = true;
+    const failedTests = [];
+    
+    for (let i = 0; i < this.startupTests.length; i++) {
+      const test = this.startupTests[i];
+      const equity = this.calculateEquityBitval(test.hero, test.villain, [], iterations, optimize);
+      const diff = Math.abs(equity - test.expectedEquity);
+      
+      if (diff > tolerance) {
+        allPassed = false;
+        failedTests.push({ ...test, actualEquity: equity, diff });
+        console.log(`❌ Test ${i + 1} failed: ${test.hero.join('')} vs ${test.villain.join('')} - Expected: ${test.expectedEquity}%, Got: ${equity.toFixed(2)}%, Diff: ${diff.toFixed(2)}%`);
+      } else {
+        console.log(`✓ Test ${i + 1} passed: ${test.hero.join('')} vs ${test.villain.join('')}`);
+      }
+    }
+    
+    if (!allPassed) {
+      console.log("\nInvestigating failures with flop/turn/river tests (raw evaluation, no optimize)...");
+      let handId = 1;
+      let hasOptimizationIssue = false;
+      let hasRawEvaluationIssue = false;
+      
+      for (const test of failedTests) {
+        const optimizedResults = this.testHand(test.hero, test.villain, tolerance, tolerance, 100, false, null, true);
+        const rawResults = this.testHand(test.hero, test.villain, tolerance, tolerance, 100, false, null, false);
+        
+        if (optimizedResults && !rawResults) {
+          hasOptimizationIssue = true;
+          console.log(`  ⚠️  ${test.hero.join('')} vs ${test.villain.join('')}: Issue appears to be in optimizations/caching`);
+        } else if (rawResults && (rawResults.flopCount > 0 || rawResults.turnCount > 0 || rawResults.riverCount > 0)) {
+          hasRawEvaluationIssue = true;
+          console.log(`  ⚠️  ${test.hero.join('')} vs ${test.villain.join('')}: Issue in raw evaluation (flop/turn/river discrepancies found)`);
+          const saveResult = this.prepareInitialTestSave(rawResults, test.hero, test.villain);
+          if (saveResult && saveResult.shouldSave) {
+            this.saveInitialTestResults(saveResult, test.hero, test.villain, handId);
+            handId += saveResult.discrepanciesFound;
+          }
+        } else if (rawResults) {
+          hasOptimizationIssue = true;
+          console.log(`  ⚠️  ${test.hero.join('')} vs ${test.villain.join('')}: Issue appears to be in optimizations/caching (preflop only)`);
+          const saveResult = this.prepareInitialTestSave(rawResults, test.hero, test.villain);
+          if (saveResult && saveResult.shouldSave) {
+            this.saveInitialTestResults(saveResult, test.hero, test.villain, handId);
+            handId += saveResult.discrepanciesFound;
+          }
+        } else {
+          const fakeResults = this.createTestResults();
+          fakeResults.preflopDiff = test.diff;
+          fakeResults.failureType = "equity";
+          const saveResult = this.prepareInitialTestSave(fakeResults, test.hero, test.villain);
+          if (saveResult && saveResult.shouldSave) {
+            this.saveInitialTestResults(saveResult, test.hero, test.villain, handId);
+            handId += saveResult.discrepanciesFound;
+          }
+        }
+      }
+      
+      if (hasOptimizationIssue) {
+        console.log("\n⚠️  Some failures appear to be related to optimizations/caching.");
+      }
+      if (hasRawEvaluationIssue) {
+        console.log("\n⚠️  Some failures appear to be in raw evaluation logic.");
+      }
+    }
+    
+    return allPassed;
+  }
+
+  // ============================================================================
   // Hand Testing
   // ============================================================================
 
-  testHand(hero, villain, preflopTolerance, flopTolerance, numFlops, verbose, progressCallback) {
+  testHand(hero, villain, preflopTolerance, flopTolerance, numFlops, verbose, progressCallback, optimize = false) {
     const results = this.createTestResults();
-    const preflopResult = this.testPreflop(hero, villain, preflopTolerance, verbose);
+    const preflopResult = this.testPreflop(hero, villain, preflopTolerance, verbose, optimize);
     
     if (!preflopResult) return null;
     
@@ -561,8 +658,8 @@ class BitvalDebug {
     };
   }
 
-  testPreflop(hero, villain, preflopTolerance, verbose) {
-    const preflopEquityBitval = this.calculateEquityBitval(hero, villain, [], 100000);
+  testPreflop(hero, villain, preflopTolerance, verbose, optimize = false) {
+    const preflopEquityBitval = this.calculateEquityBitval(hero, villain, [], 100000, optimize);
     const preflopEquityReference = this.calculateEquityReference(hero, villain, []);
     const preflopDiff = this.roundEquity(preflopEquityBitval - preflopEquityReference);
     
@@ -606,7 +703,7 @@ class BitvalDebug {
       
       if (flopResult.hasDiscrepancy) {
         if (discrepantFlops.length < MAX_DISCREPANT_FLOPS) {
-          discrepantFlops.push(flop);
+        discrepantFlops.push(flop);
         }
         this.updateFlopStats(results, flopResult);
       }
@@ -780,7 +877,7 @@ class BitvalDebug {
       
       if (riverResult.hasDiscrepancy) {
         if (discrepantRiversCount < MAX_DISCREPANT_RIVERS) {
-          this.updateRiverStats(results, riverResult, flop, turn, river);
+        this.updateRiverStats(results, riverResult, flop, turn, river);
           discrepantRiversCount++;
         } else {
           results.riverCount++;
@@ -830,13 +927,13 @@ class BitvalDebug {
     
     const MAX_DISCREPANT_RIVERS_STORED = 100;
     if (results.discrepantRivers.length < MAX_DISCREPANT_RIVERS_STORED) {
-      results.discrepantRivers.push({
-        flop,
-        turn,
-        river,
-        diff: riverResult.riverDiff,
-        failureType: riverResult.riverFailureType || results.failureType
-      });
+    results.discrepantRivers.push({
+      flop,
+      turn,
+      river,
+      diff: riverResult.riverDiff,
+      failureType: riverResult.riverFailureType || results.failureType
+    });
     }
     
     if (riverResult.riverFailureType === "both" || (results.failureType !== "both" && riverResult.riverFailureType !== "")) {
@@ -848,7 +945,7 @@ class BitvalDebug {
     }
   }
 
-  testHandSkipPreflop(hero, villain, preflopTolerance, flopTolerance, numFlops, verbose, progressCallback, preflopDiff, preflopEquityReference) {
+  testHandSkipPreflop(hero, villain, preflopTolerance, flopTolerance, numFlops, verbose, progressCallback, preflopDiff, preflopEquityReference, optimize = false) {
     const results = this.createTestResults();
     results.preflopDiff = preflopDiff;
     results.preflopEquityReference = preflopEquityReference;
@@ -961,7 +1058,7 @@ class BitvalDebug {
     console.log("=".repeat(140));
     
     const header = ["ID", "Hero", "Villain", "Board", "Type", "Pre-flop", "Max Flop", "Max Turn", "Max River", "Flops", "Turns", "Rivers", "Total"];
-    const colWidths = [4, 8, 8, 20, 8, 9, 9, 9, 9, 6, 6, 7, 6];
+    const colWidths = [4, 25, 25, 25, 8, 9, 9, 9, 9, 6, 6, 7, 6];
     
     this.printTableHeader(header, colWidths);
     this.printTableRows(handsToShow, colWidths);
@@ -992,9 +1089,9 @@ class BitvalDebug {
     
     const values = [
       row.hand_id.toString(),
-      (row.hero || '').substring(0, 7),
-      (row.villain || '').substring(0, 7),
-      (row.board || '').substring(0, 19),
+      (row.hero || '').substring(0, Math.min((row.hero || '').length, colWidths[1] - 3)),
+      (row.villain || '').substring(0, Math.min((row.villain || '').length, colWidths[2] - 3)),
+      (row.board || '').substring(0, Math.min((row.board || '').length, colWidths[3] - 3)),
       row.failure_type || 'equity',
       formatDiff(row.preflop_diff),
       formatDiff(row.max_flop_diff),
@@ -1019,28 +1116,60 @@ class BitvalDebug {
     console.log(`Failed discrepancies: ${failedRows.length}`);
   }
 
-  dissectHand(handId) {
-    const rows = this.readCSV();
-    const row = rows.find(r => r.hand_id === handId);
-    
-    if (!row) {
-      console.log(`Hand ID ${handId} not found in CSV file.`);
+  dissectHand(handIdOrString) {
+    if (typeof handIdOrString === 'string' && isNaN(parseInt(handIdOrString, 10))) {
+      this.dissectHandString(handIdOrString);
       return;
     }
     
-    this.printDissectHeader(handId, row);
+    const rows = this.readCSV();
+    const row = rows.find(r => r.hand_id === parseInt(handIdOrString, 10));
+    
+    if (!row) {
+      console.log(`Hand ID ${handIdOrString} not found in CSV file.`);
+      return;
+    }
+    
+    this.printDissectHeader(handIdOrString, row);
     this.printDissectContent(row);
   }
 
+  dissectHandString(handString) {
+    const cards = handString.trim().split(/\s+/);
+    
+    if (cards.length < 5 || cards.length > 7) {
+      console.log(`Invalid hand: must be 5, 6, or 7 cards, but ${cards.length} cards provided.`);
+      return;
+    }
+    
+    const handMask = this.bitval.getBitMasked(cards);
+    const [evalResult, kickers] = this.bitval.evaluate(handMask);
+    const strength = this.bitval.getHandStrengthFromMask(evalResult);
+    
+    console.log(`\n${"=".repeat(80)}`);
+    console.log(`DISSECT: ${handString}`);
+    console.log("=".repeat(80));
+    console.log("\nHand Strength:", strength);
+    
+    const handFromMask = this.getHandFromMask(handMask);
+    const handRanks = "8765 4321 AAAA KKKK QQQQ JJJJ TTTT 9999 8888 7777 6666 5555 4444 3333 2222 AAAA";
+    console.log("\n                      ", handRanks);
+    console.log(handFromMask.join(" "), ":", this.printBitmask(evalResult), "=", this.printBitmask(kickers ? (kickers & this.KICKER_MASK) : 0n));
+    console.log("\x1b[90m[8=SF, 7=Q, 6=FH, 5=FL, 4=ST, 3=TR, 2=TP, 1=P]\x1b[0m");
+  }
+
   printDissectHeader(handId, row) {
-    const heroCards = row.hero.split(' ');
-    const villainCards = row.villain.split(' ');
+    const heroAllCards = row.hero.split(' ');
+    const villainAllCards = row.villain.split(' ');
     const board = row.board ? row.board.split(' ') : [];
+    
+    const heroCards = heroAllCards.slice(0, 2);
+    const villainCards = villainAllCards.slice(0, 2);
     
     console.log(`\n${"=".repeat(80)}`);
     console.log(`DISSECT: Hand ID ${handId}`);
-    console.log(`Hero: ${heroCards.join(' ')}`);
-    console.log(`Villain: ${villainCards.join(' ')}`);
+    console.log(`Hero: ${[...heroCards, ...board].join(' ')}`);
+    console.log(`Villain: ${[...villainCards, ...board].join(' ')}`);
     console.log(`Board: ${board.join(' ')}`);
     console.log("=".repeat(80));
   }
@@ -1051,9 +1180,12 @@ class BitvalDebug {
       return;
     }
     
-    const heroCards = row.hero.split(' ');
-    const villainCards = row.villain.split(' ');
+    const heroAllCards = row.hero.split(' ');
+    const villainAllCards = row.villain.split(' ');
     const board = row.board.split(' ');
+    
+    const heroCards = heroAllCards.slice(0, 2);
+    const villainCards = villainAllCards.slice(0, 2);
     
     const heroFullHand = this.bitval.getBitMasked([...heroCards, ...board]);
     const villainFullHand = this.bitval.getBitMasked([...villainCards, ...board]);
@@ -1100,7 +1232,7 @@ class BitvalDebug {
     const villainCards = this.getHandFromMask(villainHand).join(" ");
     console.log(villainCards, ":", this.printBitmask(villainResult), "=", this.printBitmask(villainKickers));
     
-    console.log("\x1b[90m[9=SF, 8=Q, 7=FH, 6=FL, 5=ST, 4=TR, 3=TP, 2=P, 1=HC]\x1b[0m");
+    console.log("\x1b[90m[8=SF, 7=Q, 6=FH, 5=FL, 4=ST, 3=TR, 2=TP, 1=P]\x1b[0m");
   }
 
   getHandFromMask(handMask) {
@@ -1146,6 +1278,7 @@ class BitvalDebug {
     console.log("  --list N           List first N failed discrepancies");
     console.log("  --list N-M         List failed discrepancies in range (e.g., --list 1-10)");
     console.log("  --dissect N        Show detailed bitmask breakdown for hand_id N");
+    console.log("  --dissect \"cards\"  Show detailed bitmask breakdown for hand string (e.g., \"As Ac Ks Qh Jh\")");
     console.log("  --help             Show this help message");
     console.log("");
     console.log("Examples:");
@@ -1186,6 +1319,11 @@ class BitvalDebug {
     if (args.dissect !== null) {
       this.dissectHand(args.dissect);
       return;
+    }
+    
+    if (!this.runStartupTests(args.optimize)) {
+      console.error("\n❌ Startup tests failed. Check discrepancies.csv for details.");
+      process.exit(1);
     }
     
     if (args.retest !== null) {
@@ -1332,7 +1470,7 @@ class BitvalDebug {
       return shouldExitEarly;
     };
     
-    const results = this.testHandSkipPreflop(heroCards, villainCards, args.tolerance, args.tolerance, args.flops, false, progressCallback, preflopDiff, preflopEquityReference);
+    const results = this.testHandSkipPreflop(heroCards, villainCards, args.tolerance, args.tolerance, args.flops, false, progressCallback, preflopDiff, preflopEquityReference, args.optimize);
     
     if (results && results.earlyExit) {
       return this.handleEarlyExit(args, row, baseFlopsCompleted, args.flops, totalFlopsToTest, overallStats);
@@ -1409,7 +1547,10 @@ class BitvalDebug {
 
   saveRiverDiscrepancies(heroCards, villainCards, results) {
     for (const riverDiscrepancy of results.discrepantRivers) {
-      const worstBoard = [...riverDiscrepancy.flop, riverDiscrepancy.turn, riverDiscrepancy.river].join(' ');
+      const flopArray = Array.isArray(riverDiscrepancy.flop) ? riverDiscrepancy.flop : [riverDiscrepancy.flop];
+      const turnCard = typeof riverDiscrepancy.turn === 'string' ? riverDiscrepancy.turn : String(riverDiscrepancy.turn);
+      const riverCard = typeof riverDiscrepancy.river === 'string' ? riverDiscrepancy.river : String(riverDiscrepancy.river);
+      const worstBoard = [...flopArray, turnCard, riverCard].join(' ');
       const hero7CardNew = [...heroCards, ...worstBoard.split(' ')].join(' ');
       const villain7CardNew = [...villainCards, ...worstBoard.split(' ')].join(' ');
       
@@ -1629,7 +1770,7 @@ class BitvalDebug {
   updateProgressStats(flopStats, stats, state) {
     stats.flop.tested = state.flopBaseTested + (flopStats.flopsTested || 0);
     if (flopStats.flopDiscrepancies !== undefined && flopStats.flopDiscrepancies !== null) {
-      stats.flop.found = state.flopBaseFound + flopStats.flopDiscrepancies;
+    stats.flop.found = state.flopBaseFound + flopStats.flopDiscrepancies;
     }
     if (flopStats.flopTotalDiff !== undefined && flopStats.flopTotalDiff !== null) {
       stats.flop.totalDiff = state.flopBaseTotalDiff + flopStats.flopTotalDiff;
@@ -1739,7 +1880,10 @@ class BitvalDebug {
 
   saveInitialRiverDiscrepancies(results, hero, villain, handId) {
     for (const riverDiscrepancy of results.discrepantRivers) {
-      const worstBoard = [...riverDiscrepancy.flop, riverDiscrepancy.turn, riverDiscrepancy.river].join(' ');
+      const flopArray = Array.isArray(riverDiscrepancy.flop) ? riverDiscrepancy.flop : [riverDiscrepancy.flop];
+      const turnCard = typeof riverDiscrepancy.turn === 'string' ? riverDiscrepancy.turn : String(riverDiscrepancy.turn);
+      const riverCard = typeof riverDiscrepancy.river === 'string' ? riverDiscrepancy.river : String(riverDiscrepancy.river);
+      const worstBoard = [...flopArray, turnCard, riverCard].join(' ');
       const hero7Card = [...hero, ...worstBoard.split(' ')].join(' ');
       const villain7Card = [...villain, ...worstBoard.split(' ')].join(' ');
       
