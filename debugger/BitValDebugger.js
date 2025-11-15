@@ -35,7 +35,7 @@ class BitValDebugger {
     return roundedDiff > tolerance;
   }
 
-  compare(hero, villain, board = [], deadCards = [], referenceData = {}, verbose = true, comprehensive = false, toleranceFlop = 0, toleranceNoBoard = 1.5) {
+  compare(hero, villain, board = [], deadCards = [], referenceData = {}, verbose = true, comprehensive = false, toleranceFlop = 0, toleranceNoBoard = 1.5, skipToIndex = -1) {
     const results = {
       overall: null,
       flops: {},
@@ -87,53 +87,68 @@ class BitValDebugger {
         Object.values(referenceData).some(v => Array.isArray(v) && v.length >= 1 && typeof v[0] === 'number');
       
       if (shouldTestFlops && hasFlopStructure) {
-        
-        for (const [flopKey, flopData] of Object.entries(referenceData)) {
-          // Skip if not an array or doesn't match flop structure
-          if (!Array.isArray(flopData) || flopData.length < 1 || typeof flopData[0] !== 'number') continue;
+        // If skipToIndex is -1, skip all flop tests
+        if (skipToIndex === -1) {
+          // Skip all flop tests
+        } else {
+          // Get all flop entries and sort by key for consistent ordering
+          const flopEntries = Object.entries(referenceData)
+            .filter(([key, value]) => Array.isArray(value) && value.length >= 1 && typeof value[0] === 'number')
+            .sort((a, b) => a[0].localeCompare(b[0]));
           
-          const [expectedFlopEquity, turnData] = flopData;
-          const flopCards = flopKey.split(' ');
-          
-          const flopResult = this._testFlop(hero, villain, flopCards, deadCards, expectedFlopEquity, toleranceFlop, verbose, comprehensive);
-          results.flops[flopKey] = flopResult;
-          results.summary.flopsTested++;
-          if (flopResult.failed) {
-            results.summary.flopsFailed++;
-          }
+          let flopIndex = 0;
+          for (const [flopKey, flopData] of flopEntries) {
+            // Skip flops until we reach skipToIndex
+            if (skipToIndex >= 0 && flopIndex < skipToIndex) {
+              flopIndex++;
+              continue;
+            }
+            
+            const [expectedFlopEquity, turnData] = flopData;
+            const flopCards = flopKey.split(' ');
+            
+            const flopResult = this._testFlop(hero, villain, flopCards, deadCards, expectedFlopEquity, toleranceFlop, verbose, comprehensive);
+            results.flops[flopKey] = flopResult;
+            results.summary.flopsTested++;
+            if (flopResult.failed) {
+              results.summary.flopsFailed++;
+            }
+            
+            flopIndex++;
 
-          // Level 2: Test turns only if flop fails or comprehensive mode
-          const shouldTestTurns = comprehensive || flopResult.failed;
-          
-          if (shouldTestTurns && turnData && typeof turnData === 'object' && Object.keys(turnData).length > 0) {
-            for (const [turnCard, turnCardData] of Object.entries(turnData)) {
-              if (!Array.isArray(turnCardData) || turnCardData.length < 1) continue;
-              
-              const [expectedTurnEquity, riverData] = turnCardData;
-              
-              const turnResult = this._testTurn(hero, villain, flopCards, turnCard, deadCards, expectedTurnEquity, toleranceFlop, verbose, comprehensive, flopKey);
-              if (!flopResult.turns) flopResult.turns = {};
-              flopResult.turns[turnCard] = turnResult;
-              results.summary.turnsTested++;
-              if (turnResult.failed) {
-                results.summary.turnsFailed++;
-              }
+            // Level 2: Test turns only if flop fails or comprehensive mode
+            const shouldTestTurns = comprehensive || flopResult.failed;
+            
+            if (shouldTestTurns && turnData && typeof turnData === 'object' && Object.keys(turnData).length > 0) {
+              for (const [turnCard, turnCardData] of Object.entries(turnData)) {
+                if (!Array.isArray(turnCardData) || turnCardData.length < 1) continue;
+                
+                const [expectedTurnEquity, riverData] = turnCardData;
+                
+                const turnResult = this._testTurn(hero, villain, flopCards, turnCard, deadCards, expectedTurnEquity, toleranceFlop, verbose, comprehensive, flopKey);
+                if (!flopResult.turns) flopResult.turns = {};
+                flopResult.turns[turnCard] = turnResult;
+                results.summary.turnsTested++;
+                if (turnResult.failed) {
+                  results.summary.turnsFailed++;
+                }
 
-              // Level 3: Test rivers only if turn fails or comprehensive mode
-              const shouldTestRivers = comprehensive || turnResult.failed;
-              
-              if (shouldTestRivers && riverData && typeof riverData === 'object' && Object.keys(riverData).length > 0) {
-                for (const [riverCard, riverEquity] of Object.entries(riverData)) {
-                  if (!Array.isArray(riverEquity) || riverEquity.length < 1) continue;
-                  
-                  const [expectedRiverEquity] = riverEquity;
-                  
-                  const riverResult = this._testRiver(hero, villain, flopCards, turnCard, riverCard, deadCards, expectedRiverEquity, toleranceFlop, verbose, flopKey, turnCard);
-                  if (!turnResult.rivers) turnResult.rivers = {};
-                  turnResult.rivers[riverCard] = riverResult;
-                  results.summary.riversTested++;
-                  if (riverResult.failed) {
-                    results.summary.riversFailed++;
+                // Level 3: Test rivers only if turn fails or comprehensive mode
+                const shouldTestRivers = comprehensive || turnResult.failed;
+                
+                if (shouldTestRivers && riverData && typeof riverData === 'object' && Object.keys(riverData).length > 0) {
+                  for (const [riverCard, riverEquity] of Object.entries(riverData)) {
+                    if (!Array.isArray(riverEquity) || riverEquity.length < 1) continue;
+                    
+                    const [expectedRiverEquity] = riverEquity;
+                    
+                    const riverResult = this._testRiver(hero, villain, flopCards, turnCard, riverCard, deadCards, expectedRiverEquity, toleranceFlop, verbose, flopKey, turnCard);
+                    if (!turnResult.rivers) turnResult.rivers = {};
+                    turnResult.rivers[riverCard] = riverResult;
+                    results.summary.riversTested++;
+                    if (riverResult.failed) {
+                      results.summary.riversFailed++;
+                    }
                   }
                 }
               }
@@ -221,8 +236,8 @@ class BitValDebugger {
     // Evaluate directly (board is complete)
     const heroFullHand = heroMask | completeBoardMask;
     const villainFullHand = villainMask | completeBoardMask;
-    const heroEval = this.bitval.evaluate(heroFullHand);
-    const villainEval = this.bitval.evaluate(villainFullHand);
+    const [heroEval, heroTiebreaker] = this.bitval.evaluate(heroFullHand);
+    const [villainEval, villainTiebreaker] = this.bitval.evaluate(villainFullHand);
 
     // Determine winner
     let actualEquity;
@@ -231,7 +246,18 @@ class BitValDebugger {
     } else if (heroEval < villainEval) {
       actualEquity = 0.0;
     } else {
-      actualEquity = 50.0; // Tie
+      // Tie on main eval, check tiebreaker
+      if (heroTiebreaker !== null && villainTiebreaker !== null) {
+        if (heroTiebreaker > villainTiebreaker) {
+          actualEquity = 100.0;
+        } else if (heroTiebreaker < villainTiebreaker) {
+          actualEquity = 0.0;
+        } else {
+          actualEquity = 50.0; // True tie
+        }
+      } else {
+        actualEquity = 50.0; // Tie (no tiebreaker available)
+      }
     }
 
     const difference = actualEquity - expectedEquity;
@@ -245,20 +271,9 @@ class BitValDebugger {
       const RESET = '\x1b[0m';
       console.log(`${lineColor}      River: ${riverCard} - ${actualEquity.toFixed(2)}% (Expected: ${expectedEquity.toFixed(2)}%, Diff: ${difference >= 0 ? '+' : ''}${difference.toFixed(2)}%, Tol: ${tolerance.toFixed(2)}%)${RESET}`);
       
-      // Show bitmasks when test fails
+      // Show bitmasks when test fails using bitval.debug()
       if (failed) {
-        const heroHandStr = `[${[...hero, ...completeBoard].join(' ')}]`;
-        const villainHandStr = `[${[...villain, ...completeBoard].join(' ')}]`;
-        const heroEvalStr = this._formatBitmask(heroEval);
-        const villainEvalStr = this._formatBitmask(villainEval);
-        
-        // Align bitmasks by padding the hand strings to the same length
-        const maxHandLen = Math.max(heroHandStr.length, villainHandStr.length);
-        const paddedHeroHand = heroHandStr.padEnd(maxHandLen);
-        const paddedVillainHand = villainHandStr.padEnd(maxHandLen);
-        
-        console.log(`\x1b[37m${paddedHeroHand} ${heroEvalStr}\x1b[0m`);
-        console.log(`\x1b[37m${paddedVillainHand} ${villainEvalStr}\x1b[0m`);
+        this.bitval.debug(heroFullHand, villainFullHand, heroEval, villainEval);
       }
     }
 
@@ -268,23 +283,6 @@ class BitValDebugger {
       difference: difference,
       failed: failed
     };
-  }
-
-  /**
-   * Format bitmask with spaces every 4 bits for readability
-   * @param {BigInt|Array} bitmask - The bitmask to format (may be array [eval, tiebreaker] or BigInt)
-   * @returns {string} - Formatted bitmask string with spaces every 4 bits, padded to 64 bits
-   */
-  _formatBitmask(bitmask) {
-    // Handle array return from evaluate() [eval, tiebreaker]
-    const evalValue = Array.isArray(bitmask) ? bitmask[0] : bitmask;
-    
-    // Convert to binary and pad to 64 bits for full display
-    const binary = evalValue.toString(2);
-    const padded = binary.padStart(64, '0');
-    
-    // Split into groups of 4 and join with spaces
-    return padded.match(/.{1,4}/g).join(' ');
   }
 
   _calculateEquity(result) {

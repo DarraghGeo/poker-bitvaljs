@@ -218,7 +218,6 @@ class BitVal{
         result["lose"]++;
         continue;
       }
-
       if (hero_tiebreaker > villain_tiebreaker){
         result["win"]++;
         continue;
@@ -291,15 +290,22 @@ class BitVal{
     console.log(this.printBitmask(heroResult),this.getHandStrengthFromMask(heroResult));
     console.log(this.printBitmask(villainResult),this.getHandStrengthFromMask(villainResult));
   }
-  debug(heroHand, villainHand, heroResult = false, villainResult = false){
+  debug(heroHand, villainHand, heroResult = false, villainResult = false, heroKickers = [], villainKickers = []){
     let maskSuits = "____ ____ dhcs dhcs dhcs dhcs dhcs dhcs dhcs dhcs dhcs dhcs dhcs dhcs dhcs dhcs";
     let maskRanks = "____ ____ AAAA KKKK QQQQ JJJJ TTTT 9999 8888 7777 6666 5555 4444 3333 2222 AAAA";
     let handRanks = "8765 4321 AAAA KKKK QQQQ JJJJ TTTT 9999 8888 7777 6666 5555 4444 3333 2222 AAAA";
-    console.log("  ",maskSuits,"\t","  ",handRanks);
-    console.log("Hh",this.printBitmask(heroHand),"\t","Hr",this.printBitmask(heroResult));
-    console.log("Vh",this.printBitmask(villainHand),"\t","Vr",this.printBitmask(villainResult));
-    console.log("  ",maskRanks,"\t","  ",handRanks);
-    console.log("[9=SF, 8=Q, 7=FH, 6=FL, 5=ST, 4=TR, 3=TP, 2=P, 1=HC]");
+    console.log("                      ",handRanks," ",handRanks);
+
+    // Print hero row with cards
+    let heroCards = this.getHandFromMask(heroHand).join(" ");
+    console.log(heroCards, ":",this.printBitmask(heroResult),"=",this.printBitmask(heroKickers));
+
+    // Print villain row with cards
+    let villainCards = this.getHandFromMask(villainHand).join(" ");
+    console.log(villainCards, ":",this.printBitmask(villainResult),"=",this.printBitmask(villainKickers));
+
+    // Dark grey: ANSI escape code '\x1b[90m' (for "bright black"), reset with '\x1b[0m'
+    console.log("\x1b[90m[9=SF, 8=Q, 7=FH, 6=FL, 5=ST, 4=TR, 3=TP, 2=P, 1=HC]\x1b[0m");
   }
 
   deal(hand, deadCards = 0n, numberOfCards = 7){
@@ -533,14 +539,19 @@ class BitVal{
       // Extract highest kicker (quads use 4 cards, need 1 kicker)
       let quadsRanksMask = this._getRankMaskFromBitmask(response);
       let kickers = this._extractKickers(hand, quadsRanksMask, 1);
-      return [(response | this.QUADS_SCORE) | kickers, null];
+      return [(response | this.QUADS_SCORE), kickers];
     }
 
-    let trips = this._bitTrips(hand);
-    let pairs = this._bitPairs(hand);
+    let trips = this._bitTrips(hand) & (0xFFFFFFFFFFFF0n | (1n << 52n));
+    let pairs = this._bitPairs(hand) & (0xFFFFFFFFFFFF0n | (1n << 52n));
 
     if ((trips && pairs && trips ^ pairs) || this.countBits(trips) > 1){
-      return [trips | pairs | this.FULL_HOUSE_SCORE, trips];
+      // console.log();
+      // console.log('Trips result: ', trips.toString(2).padStart(64, '0'));
+      // console.log('Pairs result: ', pairs.toString(2).padStart(64, '0'));
+      // console.log('Trips | Pairs:', (trips | pairs).toString(2).padStart(64, '0'));
+      // console.log();
+      return [trips | this.FULL_HOUSE_SCORE, pairs];
     }
 
     if (response = this._bitFlush(hand)){
@@ -555,7 +566,7 @@ class BitVal{
       // Extract 2 kickers (trips use 3 cards, need 2 kickers)
       let tripsRanksMask = this._getRankMaskFromBitmask(response);
       let kickers = this._extractKickers(hand, tripsRanksMask, 2);
-      return [(response | this.TRIPS_SCORE) | kickers, null];
+      return [(response | this.TRIPS_SCORE), kickers];
     }
 
     if (response = pairs) {
@@ -563,12 +574,12 @@ class BitVal{
         // Two Pair: Extract 1 kicker (two pairs use 4 cards, need 1 kicker)
         let pairRanksMask = this._getTwoPairRanksMask(response);
         let kickers = this._extractKickers(hand, pairRanksMask, 1);
-        return [(response | this.TWO_PAIRS_SCORE) | kickers, null];
+        return [(response | this.TWO_PAIRS_SCORE), kickers];
       }
       // Pair: Extract 3 kickers (pair uses 2 cards, need 3 kickers)
       let pairRanksMask = this._getRankMaskFromBitmask(response);
       let kickers = this._extractKickers(hand, pairRanksMask, 3);
-      return [(response | this.PAIR_SCORE) | kickers, null];
+      return [(response | this.PAIR_SCORE), kickers];
     }
 
     return [this.normalize(hand), null];
@@ -633,13 +644,8 @@ class BitVal{
       ((this.BIT_2 & hand) << 1n) & (this.BIT_3 & hand) | // 0110
       ((this.BIT_2 & hand) << 2n) & (this.BIT_4 & hand) | // 0101
       ((this.BIT_3 & hand) << 1n) & (this.BIT_4 & hand)); // 0011
-    pairs = ((pairs >> 1n | pairs >> 2n | pairs >> 3n) & this.BIT_1) & ~1n;
-    // Fix Ace dual representation: if bit 12 (Ace rank) is set, verify we have 2+ Aces
-    // Single Ace has 2 bits (dual representation), 2+ Aces have 4+ bits
-    if (pairs & (1n << 12n) && this.countBits(hand & this.RANK_MASKS[12]) < 4) {
-      pairs = pairs & ~(1n << 12n);
-    }
-    return pairs;
+    pairs = (pairs >> 1n | pairs >> 2n | pairs >> 3n) & this.BIT_1;
+    return this.stripBits(pairs, 2);
   }
 
   _bitTrips(hand){ 
@@ -647,7 +653,7 @@ class BitVal{
     let b = (((this.BIT_2 & hand) << 1n & (this.BIT_3 & hand)) << 1n & (this.BIT_4 & hand)) >> 3n ; // 1110
     let c = (((this.BIT_1 & hand) << 2n & (this.BIT_3 & hand)) << 1n & (this.BIT_4 & hand)) >> 3n ; // 1101
     let d = (((this.BIT_1 & hand) << 1n & (this.BIT_2 & hand)) << 2n & (this.BIT_4 & hand)) >> 3n; // 1011
-    return ((a | b | c | d) & this.BIT_1) & ~1n;
+    return this.stripBits((a | b | c | d) & this.BIT_1, 1);
   }
 
   _bitFlush(hand){
@@ -661,6 +667,7 @@ class BitVal{
     return 0n;
   }
 
+  // Returns the flush bits in the LSB of the rank group.
   _bitFlush2(hand){
 
     hand = hand >> 4n;
@@ -678,6 +685,7 @@ class BitVal{
     if (this.countBits(diamond) > 4) return spade;
 }
 
+  // Returns the high card in the straight, to be merged with the SCORE.
   _bitStraight(hand){
     hand = (hand | hand >> 1n | hand >> 2n | hand >> 3n) & this.BIT_1;
 
@@ -690,6 +698,7 @@ class BitVal{
     return this.stripBits(hand, 1);
   }
 
+  // Returns the quad value in the LSB of the rank group.
   _bitQuads(hand){
     return ((((
       (hand & this.BIT_1) << 1n &   // 0001
@@ -699,6 +708,7 @@ class BitVal{
       & this.BIT_4) >> 3n;
   }
 
+  // Only returns the high card in the straight flush, to be merged with the SCORE.
   _bitStraightFlush(hand){
     hand = hand & 
       (hand << 4n) & 
