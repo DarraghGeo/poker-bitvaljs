@@ -388,7 +388,7 @@ class BitVal{
    * @returns {BigInt[]} - Returns an array containing the card mask and straight flush mask for the given set of cards.
    */
   normalize(hand, bitShift = 4){
-    let shift_bits = ((hand | hand >> 1n | hand >> 2n) & this.BIT_1) >> 4n;
+    let shift_bits = ((hand | hand >> 1n | hand >> 2n | hand >> 3n) & this.BIT_1) >> 4n;
     let normal_bits = 0n;
     bitShift = BigInt(bitShift);
 
@@ -551,7 +551,7 @@ class BitVal{
       // console.log('Pairs result: ', pairs.toString(2).padStart(64, '0'));
       // console.log('Trips | Pairs:', (trips | pairs).toString(2).padStart(64, '0'));
       // console.log();
-      return [trips | this.FULL_HOUSE_SCORE, pairs];
+      return [trips | this.FULL_HOUSE_SCORE, this.stripBits(pairs & ~trips, 1)];
     }
 
     if (response = this._bitFlush(hand)){
@@ -582,7 +582,7 @@ class BitVal{
       return [(response | this.PAIR_SCORE), kickers];
     }
 
-    return [this.normalize(hand), null];
+    return [this.stripBits(this.normalize(hand), 5), null];
 
   }
 
@@ -660,7 +660,7 @@ class BitVal{
     let i = 0n;
     while (i < 4){
       if (this.countBits((hand >> 4n) & (this.BIT_1 << i)) >= 5){
-        return ((hand >> 4n) & (this.BIT_1 << i)) >> i;
+        return this.stripBits(((hand >> 4n) & (this.BIT_1 << i)) >> i, 5);
       }
       i++;
     }
@@ -673,16 +673,16 @@ class BitVal{
     hand = hand >> 4n;
 
     let spade = hand & this.BIT_1;
-    if (this.countBits(spade) > 4) return spade;
+    if (this.countBits(spade) > 4) return this.stripBits(spade, 5);
 
     let club = hand & this.BIT_2;
-    if (this.countBits(club) > 4) return club;
+    if (this.countBits(club) > 4) return this.stripBits(club, 5);
 
     let heart = hand & this.BIT_3;
-    if (this.countBits(heart) > 4) return heart;
+    if (this.countBits(heart) > 4) return this.stripBits(heart, 5);
 
     let diamond = hand & this.BIT_4;
-    if (this.countBits(diamond) > 4) return spade;
+    if (this.countBits(diamond) > 4) return this.stripBits(diamond, 5);
 }
 
   // Returns the high card in the straight, to be merged with the SCORE.

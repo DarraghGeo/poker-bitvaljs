@@ -1,0 +1,4 @@
+hand_id,hero,villain,board,pass,failure_type,preflop_diff,max_flop_diff,max_turn_diff,max_river_diff,flop_count,turn_count,river_count,total_discrepancies
+38,Ks 3c,2c 2s,,false,equity,-1.69,0,0,0,0,0,0,1
+39,4d 9c,Kd 5d,,false,equity,0.81,0,0,0,0,0,0,1
+40,Jh 7s,6s 9d,,false,equity,-62.79,0,0,0,0,0,0,1
