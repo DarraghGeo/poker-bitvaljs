@@ -339,6 +339,10 @@ class BitvalDebug {
     return Math.round(equity * 100) / 100;
   }
 
+  roundEquityTo2Decimals(equity) {
+    return Math.round(equity * 100) / 100;
+  }
+
   // ============================================================================
   // Hand Ranking Evaluation
   // ============================================================================
@@ -412,7 +416,8 @@ class BitvalDebug {
   }
 
   determineFailureType(equityDiff, rankingMatch, tolerance) {
-    const equityFails = Math.abs(equityDiff) > tolerance;
+    const roundedDiff = this.roundEquityTo2Decimals(equityDiff);
+    const equityFails = tolerance === 0 ? Math.abs(roundedDiff) >= 0.01 : Math.abs(roundedDiff) > tolerance;
     const rankingFails = !rankingMatch.match;
     
     if (equityFails && rankingFails) return "both";
@@ -593,13 +598,16 @@ class BitvalDebug {
     const flops = this.generateRandomFlops(hero, villain, [], numFlops);
     const discrepantFlops = [];
     results.flopsTested = flops.length;
+    const MAX_DISCREPANT_FLOPS = 10000;
     
     for (let flopIndex = 0; flopIndex < flops.length; flopIndex++) {
       const flop = flops[flopIndex];
       const flopResult = this.testSingleFlop(hero, villain, flop, flopTolerance, results);
       
       if (flopResult.hasDiscrepancy) {
-        discrepantFlops.push(flop);
+        if (discrepantFlops.length < MAX_DISCREPANT_FLOPS) {
+          discrepantFlops.push(flop);
+        }
         this.updateFlopStats(results, flopResult);
       }
       
@@ -619,21 +627,29 @@ class BitvalDebug {
     }
     
     if (verbose) {
-      console.log(`    Found ${discrepantFlops.length} discrepant flops`);
+      console.log(`    Found ${discrepantFlops.length} discrepant flops (processing up to ${MAX_DISCREPANT_FLOPS})`);
     }
     
     this.testTurnsAndRivers(hero, villain, discrepantFlops, flopTolerance, results, verbose, progressCallback);
+    discrepantFlops.length = 0;
   }
 
   testSingleFlop(hero, villain, flop, flopTolerance, results) {
-    const flopEquityBitval = this.calculateEquityBitval(hero, villain, flop);
-    const flopEquityReference = this.calculateEquityReference(hero, villain, flop);
-    const flopDiff = this.roundEquity(flopEquityBitval - flopEquityReference);
+    const flopEquityBitvalRaw = this.calculateEquityBitval(hero, villain, flop);
+    const flopEquityReferenceRaw = this.calculateEquityReference(hero, villain, flop);
+    const flopEquityBitval = this.roundEquityTo2Decimals(flopEquityBitvalRaw);
+    const flopEquityReference = this.roundEquityTo2Decimals(flopEquityReferenceRaw);
+    const flopDiffRaw = flopEquityBitval - flopEquityReference;
+    const flopDiff = this.roundEquityTo2Decimals(flopDiffRaw);
     
     const flopRankingBitval = this.evaluateHandRankingBitval(hero, villain, flop);
     const flopRankingReference = this.evaluateHandRankingReference(hero, villain, flop);
     const flopRankingMatch = this.compareHandRankings(flopRankingBitval, flopRankingReference);
     const flopFailureType = this.determineFailureType(flopDiff, flopRankingMatch, flopTolerance);
+    
+    const hasEquityDiscrepancy = flopTolerance === 0 ? Math.abs(flopDiff) >= 0.01 : Math.abs(flopDiff) > flopTolerance;
+    const hasRankingDiscrepancy = flopFailureType !== "" && (flopFailureType === "ranking" || flopFailureType === "both");
+    const hasDiscrepancy = hasEquityDiscrepancy || hasRankingDiscrepancy;
     
     return {
       flopEquityBitval,
@@ -641,7 +657,7 @@ class BitvalDebug {
       flopDiff,
       flopRankingMatch,
       flopFailureType,
-      hasDiscrepancy: Math.abs(flopDiff) > flopTolerance || flopFailureType !== ""
+      hasDiscrepancy
     };
   }
 
@@ -661,6 +677,8 @@ class BitvalDebug {
 
   updateProgress(flopIndex, flopResult, results, progressCallback) {
     if (!progressCallback) return;
+    
+    if (flopIndex % 100 !== 0 && flopIndex !== results.flopsTested - 1) return;
     
     const shouldExit = progressCallback({
       flopsTested: flopIndex + 1,
@@ -684,25 +702,44 @@ class BitvalDebug {
   }
 
   testTurnsAndRivers(hero, villain, discrepantFlops, flopTolerance, results, verbose, progressCallback) {
+    let turnIndex = 0;
+    const MAX_DISCREPANT_TURNS_PER_FLOP = 10;
+    
     for (const flop of discrepantFlops) {
       const turns = this.getAllTurns(hero, villain, flop);
       results.turnsTested += turns.length;
+      let discrepantTurnsCount = 0;
       
       for (const turn of turns) {
+        turnIndex++;
         const turnResult = this.testSingleTurn(hero, villain, flop, turn, flopTolerance, results);
         
-        if (turnResult.hasDiscrepancy) {
+        if (turnResult.hasDiscrepancy && discrepantTurnsCount < MAX_DISCREPANT_TURNS_PER_FLOP) {
           this.updateTurnStats(results, turnResult);
           this.testRivers(hero, villain, flop, turn, flopTolerance, results, verbose, progressCallback);
+          discrepantTurnsCount++;
+        }
+        
+        if (progressCallback && turnIndex % 10 === 0) {
+          progressCallback({
+            flopsTested: results.flopsTested || 0,
+            flopDiscrepancies: results.flopCount || 0,
+            turnsTested: results.turnsTested || 0,
+            turnDiscrepancies: results.turnCount || 0,
+            riversTested: results.riversTested || 0,
+            riverDiscrepancies: results.riverCount || 0
+          });
         }
       }
     }
   }
 
   testSingleTurn(hero, villain, flop, turn, flopTolerance, results) {
-    const turnEquityBitval = this.calculateEquityBitval(hero, villain, [...flop, turn]);
-    const turnEquityReference = this.calculateEquityReference(hero, villain, [...flop, turn]);
-    const turnDiff = this.roundEquity(turnEquityBitval - turnEquityReference);
+    const turnEquityBitvalRaw = this.calculateEquityBitval(hero, villain, [...flop, turn]);
+    const turnEquityReferenceRaw = this.calculateEquityReference(hero, villain, [...flop, turn]);
+    const turnEquityBitval = this.roundEquityTo2Decimals(turnEquityBitvalRaw);
+    const turnEquityReference = this.roundEquityTo2Decimals(turnEquityReferenceRaw);
+    const turnDiff = turnEquityBitval - turnEquityReference;
     
     const turnRankingBitval = this.evaluateHandRankingBitval(hero, villain, [...flop, turn]);
     const turnRankingReference = this.evaluateHandRankingReference(hero, villain, [...flop, turn]);
@@ -734,15 +771,23 @@ class BitvalDebug {
   testRivers(hero, villain, flop, turn, flopTolerance, results, verbose, progressCallback) {
     const rivers = this.getAllRivers(hero, villain, flop, turn);
     results.riversTested += rivers.length;
+    const MAX_DISCREPANT_RIVERS = 50;
+    let discrepantRiversCount = 0;
     
-    for (const river of rivers) {
+    for (let i = 0; i < rivers.length; i++) {
+      const river = rivers[i];
       const riverResult = this.testSingleRiver(hero, villain, flop, turn, river, flopTolerance);
       
       if (riverResult.hasDiscrepancy) {
-        this.updateRiverStats(results, riverResult, flop, turn, river);
+        if (discrepantRiversCount < MAX_DISCREPANT_RIVERS) {
+          this.updateRiverStats(results, riverResult, flop, turn, river);
+          discrepantRiversCount++;
+        } else {
+          results.riverCount++;
+        }
       }
       
-      if (progressCallback) {
+      if (progressCallback && (i % 10 === 0 || i === rivers.length - 1)) {
         progressCallback({
           flopsTested: results.flopsTested || 0,
           flopDiscrepancies: results.flopCount || 0,
@@ -759,9 +804,11 @@ class BitvalDebug {
   }
 
   testSingleRiver(hero, villain, flop, turn, river, flopTolerance) {
-    const riverEquityBitval = this.calculateEquityBitval(hero, villain, [...flop, turn, river]);
-    const riverEquityReference = this.calculateEquityReference(hero, villain, [...flop, turn, river]);
-    const riverDiff = this.roundEquity(riverEquityBitval - riverEquityReference);
+    const riverEquityBitvalRaw = this.calculateEquityBitval(hero, villain, [...flop, turn, river]);
+    const riverEquityReferenceRaw = this.calculateEquityReference(hero, villain, [...flop, turn, river]);
+    const riverEquityBitval = this.roundEquityTo2Decimals(riverEquityBitvalRaw);
+    const riverEquityReference = this.roundEquityTo2Decimals(riverEquityReferenceRaw);
+    const riverDiff = riverEquityBitval - riverEquityReference;
     
     const riverRankingBitval = this.evaluateHandRankingBitval(hero, villain, [...flop, turn, river]);
     const riverRankingReference = this.evaluateHandRankingReference(hero, villain, [...flop, turn, river]);
@@ -781,13 +828,16 @@ class BitvalDebug {
     results.riverCount++;
     results.riverTotalDiff += Math.abs(riverResult.riverDiff);
     
-    results.discrepantRivers.push({
-      flop,
-      turn,
-      river,
-      diff: riverResult.riverDiff,
-      failureType: riverResult.riverFailureType || results.failureType
-    });
+    const MAX_DISCREPANT_RIVERS_STORED = 100;
+    if (results.discrepantRivers.length < MAX_DISCREPANT_RIVERS_STORED) {
+      results.discrepantRivers.push({
+        flop,
+        turn,
+        river,
+        diff: riverResult.riverDiff,
+        failureType: riverResult.riverFailureType || results.failureType
+      });
+    }
     
     if (riverResult.riverFailureType === "both" || (results.failureType !== "both" && riverResult.riverFailureType !== "")) {
       if (results.failureType === "" || results.failureType === riverResult.riverFailureType) {
@@ -1282,7 +1332,7 @@ class BitvalDebug {
       return shouldExitEarly;
     };
     
-    const results = this.testHandSkipPreflop(heroCards, villainCards, args.tolerance, 0.00, args.flops, false, progressCallback, preflopDiff, preflopEquityReference);
+    const results = this.testHandSkipPreflop(heroCards, villainCards, args.tolerance, args.tolerance, args.flops, false, progressCallback, preflopDiff, preflopEquityReference);
     
     if (results && results.earlyExit) {
       return this.handleEarlyExit(args, row, baseFlopsCompleted, args.flops, totalFlopsToTest, overallStats);
@@ -1508,7 +1558,7 @@ class BitvalDebug {
     console.log(`Pre-flop hands to test: ${args.preflops}`);
     console.log(`Flops per hand: ${args.flops}`);
     console.log(`Pre-flop tolerance: ${args.tolerance}%`);
-    console.log(`Flop/Turn/River tolerance: 0.00%`);
+    console.log(`Flop/Turn/River tolerance: ${args.tolerance}%`);
     console.log("=".repeat(80));
     
     const stats = this.createStats();
@@ -1540,7 +1590,7 @@ class BitvalDebug {
   processInitialTestHand(args, hero, villain, stats, tested, found) {
     const state = this.initInitialTestState(stats);
     const progressCallback = this.createInitialProgressCallback(args, hero, villain, stats, tested, found, state);
-    const results = this.testHand(hero, villain, args.tolerance, 0.00, args.flops, false, progressCallback);
+    const results = this.testHand(hero, villain, args.tolerance, args.tolerance, args.flops, false, progressCallback);
     
     return this.processInitialTestResults(args, hero, villain, stats, tested, found, results, state);
   }
@@ -1577,9 +1627,13 @@ class BitvalDebug {
   }
 
   updateProgressStats(flopStats, stats, state) {
-    stats.flop.tested = state.flopBaseTested + flopStats.flopsTested;
-    stats.flop.found = state.flopBaseFound + flopStats.flopDiscrepancies;
-    stats.flop.totalDiff = state.flopBaseTotalDiff + (flopStats.flopTotalDiff || 0);
+    stats.flop.tested = state.flopBaseTested + (flopStats.flopsTested || 0);
+    if (flopStats.flopDiscrepancies !== undefined && flopStats.flopDiscrepancies !== null) {
+      stats.flop.found = state.flopBaseFound + flopStats.flopDiscrepancies;
+    }
+    if (flopStats.flopTotalDiff !== undefined && flopStats.flopTotalDiff !== null) {
+      stats.flop.totalDiff = state.flopBaseTotalDiff + flopStats.flopTotalDiff;
+    }
   }
 
   checkEarlyExit(args, state) {
