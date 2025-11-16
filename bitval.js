@@ -533,13 +533,13 @@ class BitVal {
     const hCanon = optimize ? this._flattenHandsToCanonical(heroHands, boardCards, numberOfBoardCards) : { canonicalMap: null, canonicalToHand: null };
     const vCanon = optimize ? this._flattenHandsToCanonical(villainHands, boardCards, numberOfBoardCards) : { canonicalMap: null, canonicalToHand: null };
     const boardMask = this.getBitMasked(boardCards);
-    const allDeadCards = [...heroHands.flatMap(h => this._handStringToCards(h)), ...villainHands.flatMap(h => this._handStringToCards(h)), ...boardCards, ...deadCards];
+    const allDeadCards = [...boardCards, ...deadCards];
     const deadCardsMask = this.getBitMasked(allDeadCards);
     const numberOfCardsToDeal = numberOfBoardCards - boardCards.length;
     const availableCards = 52 - new Set(allDeadCards).size;
-    const exhaustiveCombinations = this.combinations(availableCards, numberOfCardsToDeal);
+    const exhaustiveCombinations = numberOfCardsToDeal > 0 && numberOfCardsToDeal <= 2 ? this.combinations(availableCards, numberOfCardsToDeal) : Infinity;
     iterations = Math.min(iterations, exhaustiveCombinations);
-    const isExhaustive = iterations === exhaustiveCombinations && numberOfCardsToDeal > 0 && numberOfCardsToDeal <= 2;
+    const isExhaustive = iterations === exhaustiveCombinations && numberOfCardsToDeal > 0 && numberOfCardsToDeal <= 2 && exhaustiveCombinations < Infinity;
     const comboArray = isExhaustive ? this._getCombinations(this._getAvailableCardMasksByLookUp(deadCardsMask), numberOfCardsToDeal) : null;
     return { hCanon, vCanon, boardMask, deadCardsMask, iterations, isExhaustive, comboArray, numberOfCardsToDeal };
   }
@@ -561,9 +561,11 @@ class BitVal {
 
   _evaluateMatchup(heroHandMask, villainHandMask, setup) {
     let matchupWin = 0, matchupTie = 0, matchupLose = 0;
+    const matchupDeadCardsMask = heroHandMask | villainHandMask;
+    const combinedDeadCardsMask = setup.deadCardsMask | matchupDeadCardsMask;
     if (!setup.isExhaustive) this.xorShift = new XorShift32();
     for (let i = 0; i < setup.iterations; i++) {
-      const completeBoard = setup.isExhaustive && setup.comboArray ? setup.boardMask | setup.comboArray[i] : this.deal(setup.boardMask, setup.deadCardsMask, setup.numberOfCardsToDeal) | setup.boardMask;
+      const completeBoard = setup.isExhaustive && setup.comboArray ? setup.boardMask | setup.comboArray[i] : this.deal(setup.boardMask, combinedDeadCardsMask, setup.numberOfCardsToDeal) | setup.boardMask;
       const [heroEval, heroKicker] = this.evaluate(heroHandMask | completeBoard);
       const [villainEval, villainKicker] = this.evaluate(villainHandMask | completeBoard);
       const result = this._compareEvaluations(heroEval, heroKicker, villainEval, villainKicker);
@@ -587,9 +589,13 @@ class BitVal {
 
   _evaluateMatchupCached(heroCanonicalKey, heroOriginalHand, villainCanonicalKey, villainOriginalHand, setup, evalCache) {
     let matchupWin = 0, matchupTie = 0, matchupLose = 0;
+    const heroCards = this._handStringToCards(heroOriginalHand);
+    const villainCards = this._handStringToCards(villainOriginalHand);
+    const matchupDeadCardsMask = this.getBitMasked([...heroCards, ...villainCards]);
+    const combinedDeadCardsMask = setup.deadCardsMask | matchupDeadCardsMask;
     if (!setup.isExhaustive) this.xorShift = new XorShift32();
     for (let i = 0; i < setup.iterations; i++) {
-      const completeBoard = setup.isExhaustive && setup.comboArray ? setup.boardMask | setup.comboArray[i] : this.deal(setup.boardMask, setup.deadCardsMask, setup.numberOfCardsToDeal) | setup.boardMask;
+      const completeBoard = setup.isExhaustive && setup.comboArray ? setup.boardMask | setup.comboArray[i] : this.deal(setup.boardMask, combinedDeadCardsMask, setup.numberOfCardsToDeal) | setup.boardMask;
       const [heroEval, heroKicker] = this._getCachedEvaluation(heroCanonicalKey, heroOriginalHand, completeBoard, evalCache);
       const [villainEval, villainKicker] = this._getCachedEvaluation(villainCanonicalKey, villainOriginalHand, completeBoard, evalCache);
       const result = this._compareEvaluations(heroEval, heroKicker, villainEval, villainKicker);
