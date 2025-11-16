@@ -41,7 +41,7 @@ class OptimizeTester {
     return combos;
   }
 
-  testPreflop(hero, villain, expectedEquity, enumerateRange = false) {
+  async testPreflop(hero, villain, expectedEquity, enumerateRange = false) {
     let heroHands, villainHands;
     
     if (enumerateRange) {
@@ -59,12 +59,12 @@ class OptimizeTester {
     
     this.seedRandom();
     const optimizedStart = performance.now();
-    const optimizedResult = this.bitval.compareRange(heroHands, villainHands, [], [], 5, this.iterations, true);
+    const optimizedResult = await this.bitval.compareRange(heroHands, villainHands, [], [], 5, this.iterations, true);
     const optimizedTime = performance.now() - optimizedStart;
     
     this.seedRandom();
     const unoptimizedStart = performance.now();
-    const unoptimizedResult = this.bitval.compareRange(heroHands, villainHands, [], [], 5, this.iterations, false);
+    const unoptimizedResult = await this.bitval.compareRange(heroHands, villainHands, [], [], 5, this.iterations, false);
     const unoptimizedTime = performance.now() - unoptimizedStart;
     
     this.seedRandom();
@@ -98,13 +98,13 @@ class OptimizeTester {
     };
   }
 
-  testFlop(hero, villain, flop) {
+  async testFlop(hero, villain, flop) {
     const heroHand = this.handToCanonical(hero);
     const villainHand = this.handToCanonical(villain);
     this.seedRandom();
-    const optimizedResult = this.bitval.compareRange([heroHand], [villainHand], flop, [], 5, this.iterations, true);
+    const optimizedResult = await this.bitval.compareRange([heroHand], [villainHand], flop, [], 5, this.iterations, true);
     this.seedRandom();
-    const unoptimizedResult = this.bitval.compareRange([heroHand], [villainHand], flop, [], 5, this.iterations, false);
+    const unoptimizedResult = await this.bitval.compareRange([heroHand], [villainHand], flop, [], 5, this.iterations, false);
     const optimizedEquity = this.calculateEquity(optimizedResult);
     const unoptimizedEquity = this.calculateEquity(unoptimizedResult);
     const diff = Math.abs(optimizedEquity - unoptimizedEquity);
@@ -112,14 +112,14 @@ class OptimizeTester {
     return { optimizedEquity, unoptimizedEquity, diff, passed };
   }
 
-  testTurn(hero, villain, flop, turn) {
+  async testTurn(hero, villain, flop, turn) {
     const heroHand = this.handToCanonical(hero);
     const villainHand = this.handToCanonical(villain);
     const board = [...flop, turn];
     this.seedRandom();
-    const optimizedResult = this.bitval.compareRange([heroHand], [villainHand], board, [], 5, this.iterations, true);
+    const optimizedResult = await this.bitval.compareRange([heroHand], [villainHand], board, [], 5, this.iterations, true);
     this.seedRandom();
-    const unoptimizedResult = this.bitval.compareRange([heroHand], [villainHand], board, [], 5, this.iterations, false);
+    const unoptimizedResult = await this.bitval.compareRange([heroHand], [villainHand], board, [], 5, this.iterations, false);
     const optimizedEquity = this.calculateEquity(optimizedResult);
     const unoptimizedEquity = this.calculateEquity(unoptimizedResult);
     const diff = Math.abs(optimizedEquity - unoptimizedEquity);
@@ -127,14 +127,14 @@ class OptimizeTester {
     return { optimizedEquity, unoptimizedEquity, diff, passed };
   }
 
-  testRiver(hero, villain, flop, turn, river) {
+  async testRiver(hero, villain, flop, turn, river) {
     const heroHand = this.handToCanonical(hero);
     const villainHand = this.handToCanonical(villain);
     const board = [...flop, turn, river];
     this.seedRandom();
-    const optimizedResult = this.bitval.compareRange([heroHand], [villainHand], board, [], 5, this.iterations, true);
+    const optimizedResult = await this.bitval.compareRange([heroHand], [villainHand], board, [], 5, this.iterations, true);
     this.seedRandom();
-    const unoptimizedResult = this.bitval.compareRange([heroHand], [villainHand], board, [], 5, this.iterations, false);
+    const unoptimizedResult = await this.bitval.compareRange([heroHand], [villainHand], board, [], 5, this.iterations, false);
     const optimizedEquity = this.calculateEquity(optimizedResult);
     const unoptimizedEquity = this.calculateEquity(unoptimizedResult);
     const diff = Math.abs(optimizedEquity - unoptimizedEquity);
@@ -175,7 +175,7 @@ class OptimizeTester {
     };
   }
 
-  runTests() {
+  async runTests() {
     console.log('='.repeat(80));
     console.log('OPTIMIZE METHOD TEST SUITE');
     console.log('='.repeat(80));
@@ -203,7 +203,7 @@ class OptimizeTester {
       }
       console.log('='.repeat(80));
 
-      const preflopResult = this.testPreflop(test.hero, test.villain, test.expectedEquity, test.enumerateRange || false);
+      const preflopResult = await this.testPreflop(test.hero, test.villain, test.expectedEquity, test.enumerateRange || false);
       console.log(`Preflop Results:`);
       console.log(`  Expected: ${preflopResult.expectedEquity.toFixed(2)}%`);
       console.log(`  Optimized (compareRange): ${preflopResult.optimizedEquity.toFixed(2)}% (diff: ${preflopResult.optimizedDiff.toFixed(2)}%) ${preflopResult.optimizedPassed ? '✓' : '❌'} - ${preflopResult.optimizedTime.toFixed(2)}ms`);
@@ -223,7 +223,7 @@ class OptimizeTester {
       
       for (let f = 0; f < boards.flops.length; f++) {
         const flop = boards.flops[f];
-        const flopResult = this.testFlop(test.hero, test.villain, flop);
+        const flopResult = await this.testFlop(test.hero, test.villain, flop);
         if (flopResult.passed) {
           flopPassed++;
           console.log(`✓ Flop [${flop.join(' ')}]: ${flopResult.optimizedEquity.toFixed(2)}% (diff: ${flopResult.diff.toFixed(2)}%)`);
@@ -234,7 +234,7 @@ class OptimizeTester {
 
         for (let t = 0; t < boards.turns.length; t++) {
           const turn = boards.turns[t];
-          const turnResult = this.testTurn(test.hero, test.villain, flop, turn);
+          const turnResult = await this.testTurn(test.hero, test.villain, flop, turn);
           if (turnResult.passed) {
             turnPassed++;
             console.log(`  ✓ Turn [${turn}]: ${turnResult.optimizedEquity.toFixed(2)}% (diff: ${turnResult.diff.toFixed(2)}%)`);
@@ -245,7 +245,7 @@ class OptimizeTester {
 
           for (let r = 0; r < boards.rivers.length; r++) {
             const river = boards.rivers[r];
-            const riverResult = this.testRiver(test.hero, test.villain, flop, turn, river);
+            const riverResult = await this.testRiver(test.hero, test.villain, flop, turn, river);
             if (riverResult.passed) {
               riverPassed++;
               console.log(`    ✓ River [${river}]: ${riverResult.optimizedEquity.toFixed(2)}% (diff: ${riverResult.diff.toFixed(2)}%)`);
@@ -280,5 +280,8 @@ class OptimizeTester {
 }
 
 const tester = new OptimizeTester();
-tester.runTests();
+tester.runTests().catch(err => {
+  console.error('Test error:', err);
+  process.exit(1);
+});
 

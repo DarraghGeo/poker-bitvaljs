@@ -177,7 +177,7 @@ class BitvalDebug {
   // Equity Calculations
   // ============================================================================
 
-  calculateEquityBitval(hero, villain, board, iterations = 1, optimize = false) {
+  async calculateEquityBitval(hero, villain, board, iterations = 1, optimize = false) {
     if (board.length === 5) {
       return this.calculateCompleteBoardEquity(hero, villain, board);
     }
@@ -187,7 +187,7 @@ class BitvalDebug {
     if (board.length === 4) {
       return this.calculateTurnEquity(hero, villain, board);
     }
-    return this.calculatePreflopEquity(hero, villain, iterations, optimize);
+    return await this.calculatePreflopEquity(hero, villain, iterations, optimize);
   }
 
   calculateCompleteBoardEquity(hero, villain, board) {
@@ -248,11 +248,11 @@ class BitvalDebug {
     return ((heroWins + ties / 2) / total) * 100;
   }
 
-  calculatePreflopEquity(hero, villain, iterations, optimize = false) {
+  async calculatePreflopEquity(hero, villain, iterations, optimize = false) {
     if (optimize) {
       const heroHand = hero[0] + hero[1];
       const villainHand = villain[0] + villain[1];
-      const result = this.bitval.compareRange([heroHand], [villainHand], [], [], 5, iterations, true);
+      const result = await this.bitval.compareRange([heroHand], [villainHand], [], [], 5, iterations, true);
       return ((result.win + result.tie / 2) / (result.win + result.lose + result.tie)) * 100;
     }
     const result = this.bitval.simulate(iterations, 5, hero, villain, [], []);
@@ -559,7 +559,7 @@ class BitvalDebug {
   // Startup Tests
   // ============================================================================
 
-  runStartupTests(optimize = false) {
+  async runStartupTests(optimize = false) {
     console.log("Running startup tests...");
     const tolerance = 0.1;
     const iterations = 2000000;
@@ -568,7 +568,7 @@ class BitvalDebug {
     
     for (let i = 0; i < this.startupTests.length; i++) {
       const test = this.startupTests[i];
-      const equity = this.calculateEquityBitval(test.hero, test.villain, [], iterations, optimize);
+      const equity = await this.calculateEquityBitval(test.hero, test.villain, [], iterations, optimize);
       const diff = Math.abs(equity - test.expectedEquity);
       
       if (diff > tolerance) {
@@ -587,8 +587,8 @@ class BitvalDebug {
       let hasRawEvaluationIssue = false;
       
       for (const test of failedTests) {
-        const optimizedResults = this.testHand(test.hero, test.villain, tolerance, tolerance, 100, false, null, true);
-        const rawResults = this.testHand(test.hero, test.villain, tolerance, tolerance, 100, false, null, false);
+        const optimizedResults = await this.testHand(test.hero, test.villain, tolerance, tolerance, 100, false, null, true);
+        const rawResults = await this.testHand(test.hero, test.villain, tolerance, tolerance, 100, false, null, false);
         
         if (optimizedResults && !rawResults) {
           hasOptimizationIssue = true;
@@ -636,9 +636,9 @@ class BitvalDebug {
   // Hand Testing
   // ============================================================================
 
-  testHand(hero, villain, preflopTolerance, flopTolerance, numFlops, verbose, progressCallback, optimize = false) {
+  async testHand(hero, villain, preflopTolerance, flopTolerance, numFlops, verbose, progressCallback, optimize = false) {
     const results = this.createTestResults();
-    const preflopResult = this.testPreflop(hero, villain, preflopTolerance, verbose, optimize);
+    const preflopResult = await this.testPreflop(hero, villain, preflopTolerance, verbose, optimize);
     
     if (!preflopResult) return null;
     
@@ -669,8 +669,8 @@ class BitvalDebug {
     };
   }
 
-  testPreflop(hero, villain, preflopTolerance, verbose, optimize = false) {
-    const preflopEquityBitval = this.calculateEquityBitval(hero, villain, [], 100000, optimize);
+  async testPreflop(hero, villain, preflopTolerance, verbose, optimize = false) {
+    const preflopEquityBitval = await this.calculateEquityBitval(hero, villain, [], 100000, optimize);
     const preflopEquityReference = this.calculateEquityReference(hero, villain, []);
     const preflopDiff = this.roundEquity(preflopEquityBitval - preflopEquityReference);
     
@@ -698,7 +698,7 @@ class BitvalDebug {
     };
   }
 
-  testFlops(hero, villain, flopTolerance, numFlops, results, verbose, progressCallback) {
+  async testFlops(hero, villain, flopTolerance, numFlops, results, verbose, progressCallback) {
     if (verbose) {
       console.log(`  Testing ${numFlops} flops...`);
     }
@@ -710,7 +710,7 @@ class BitvalDebug {
     
     for (let flopIndex = 0; flopIndex < flops.length; flopIndex++) {
       const flop = flops[flopIndex];
-      const flopResult = this.testSingleFlop(hero, villain, flop, flopTolerance, results);
+      const flopResult = await this.testSingleFlop(hero, villain, flop, flopTolerance, results);
       
       if (flopResult.hasDiscrepancy) {
         if (discrepantFlops.length < MAX_DISCREPANT_FLOPS) {
@@ -738,12 +738,12 @@ class BitvalDebug {
       console.log(`    Found ${discrepantFlops.length} discrepant flops (processing up to ${MAX_DISCREPANT_FLOPS})`);
     }
     
-    this.testTurnsAndRivers(hero, villain, discrepantFlops, flopTolerance, results, verbose, progressCallback);
+    await this.testTurnsAndRivers(hero, villain, discrepantFlops, flopTolerance, results, verbose, progressCallback);
     discrepantFlops.length = 0;
   }
 
-  testSingleFlop(hero, villain, flop, flopTolerance, results) {
-    const flopEquityBitvalRaw = this.calculateEquityBitval(hero, villain, flop);
+  async testSingleFlop(hero, villain, flop, flopTolerance, results) {
+    const flopEquityBitvalRaw = await this.calculateEquityBitval(hero, villain, flop);
     const flopEquityReferenceRaw = this.calculateEquityReference(hero, villain, flop);
     const flopEquityBitval = this.roundEquityTo2Decimals(flopEquityBitvalRaw);
     const flopEquityReference = this.roundEquityTo2Decimals(flopEquityReferenceRaw);
@@ -809,7 +809,7 @@ class BitvalDebug {
     }
   }
 
-  testTurnsAndRivers(hero, villain, discrepantFlops, flopTolerance, results, verbose, progressCallback) {
+  async testTurnsAndRivers(hero, villain, discrepantFlops, flopTolerance, results, verbose, progressCallback) {
     let turnIndex = 0;
     const MAX_DISCREPANT_TURNS_PER_FLOP = 10;
     
@@ -820,11 +820,11 @@ class BitvalDebug {
       
       for (const turn of turns) {
         turnIndex++;
-        const turnResult = this.testSingleTurn(hero, villain, flop, turn, flopTolerance, results);
+        const turnResult = await this.testSingleTurn(hero, villain, flop, turn, flopTolerance, results);
         
         if (turnResult.hasDiscrepancy && discrepantTurnsCount < MAX_DISCREPANT_TURNS_PER_FLOP) {
           this.updateTurnStats(results, turnResult);
-          this.testRivers(hero, villain, flop, turn, flopTolerance, results, verbose, progressCallback);
+          await this.testRivers(hero, villain, flop, turn, flopTolerance, results, verbose, progressCallback);
           discrepantTurnsCount++;
         }
         
@@ -842,8 +842,8 @@ class BitvalDebug {
     }
   }
 
-  testSingleTurn(hero, villain, flop, turn, flopTolerance, results) {
-    const turnEquityBitvalRaw = this.calculateEquityBitval(hero, villain, [...flop, turn]);
+  async testSingleTurn(hero, villain, flop, turn, flopTolerance, results) {
+    const turnEquityBitvalRaw = await this.calculateEquityBitval(hero, villain, [...flop, turn]);
     const turnEquityReferenceRaw = this.calculateEquityReference(hero, villain, [...flop, turn]);
     const turnEquityBitval = this.roundEquityTo2Decimals(turnEquityBitvalRaw);
     const turnEquityReference = this.roundEquityTo2Decimals(turnEquityReferenceRaw);
@@ -876,7 +876,7 @@ class BitvalDebug {
     }
   }
 
-  testRivers(hero, villain, flop, turn, flopTolerance, results, verbose, progressCallback) {
+  async testRivers(hero, villain, flop, turn, flopTolerance, results, verbose, progressCallback) {
     const rivers = this.getAllRivers(hero, villain, flop, turn);
     results.riversTested += rivers.length;
     const MAX_DISCREPANT_RIVERS = 50;
@@ -884,7 +884,7 @@ class BitvalDebug {
     
     for (let i = 0; i < rivers.length; i++) {
       const river = rivers[i];
-      const riverResult = this.testSingleRiver(hero, villain, flop, turn, river, flopTolerance);
+      const riverResult = await this.testSingleRiver(hero, villain, flop, turn, river, flopTolerance);
       
       if (riverResult.hasDiscrepancy) {
         if (discrepantRiversCount < MAX_DISCREPANT_RIVERS) {
@@ -911,8 +911,8 @@ class BitvalDebug {
     }
   }
 
-  testSingleRiver(hero, villain, flop, turn, river, flopTolerance) {
-    const riverEquityBitvalRaw = this.calculateEquityBitval(hero, villain, [...flop, turn, river]);
+  async testSingleRiver(hero, villain, flop, turn, river, flopTolerance) {
+    const riverEquityBitvalRaw = await this.calculateEquityBitval(hero, villain, [...flop, turn, river]);
     const riverEquityReferenceRaw = this.calculateEquityReference(hero, villain, [...flop, turn, river]);
     const riverEquityBitval = this.roundEquityTo2Decimals(riverEquityBitvalRaw);
     const riverEquityReference = this.roundEquityTo2Decimals(riverEquityReferenceRaw);
@@ -1320,7 +1320,7 @@ class BitvalDebug {
   // Main Execution
   // ============================================================================
 
-  main() {
+  async main() {
     const args = this.parseArgs();
     
     if (args.help || process.argv.length === 2) {
@@ -1341,7 +1341,7 @@ class BitvalDebug {
     if (args.skipTests) {
       console.log("Skipping startup tests (--skipTests=true)");
     } else {
-      if (!this.runStartupTests(args.optimize)) {
+      if (!(await this.runStartupTests(args.optimize))) {
         console.error("\n❌ Startup tests failed. Check discrepancies.csv for details.");
         process.exit(1);
       }
@@ -1352,7 +1352,7 @@ class BitvalDebug {
       return;
     }
     
-    this.runInitialTest(args);
+    await this.runInitialTest(args);
   }
 
   runRetest(args) {
@@ -1717,7 +1717,7 @@ class BitvalDebug {
     console.log("=".repeat(80));
   }
 
-  runInitialTest(args) {
+  async runInitialTest(args) {
     console.log(`Finding discrepancies...`);
     console.log(`Pre-flop hands to test: ${args.preflops}`);
     console.log(`Flops per hand: ${args.flops}`);
@@ -1739,7 +1739,7 @@ class BitvalDebug {
       
       this.updateProgressBar(tested, args.preflops, found, stats, 40, null);
       
-      const result = this.processInitialTestHand(args, hero, villain, stats, tested, found);
+      const result = await this.processInitialTestHand(args, hero, villain, stats, tested, found);
       
       if (result && result.shouldSave) {
         this.saveInitialTestResults(result, hero, villain, handId);
@@ -1751,10 +1751,10 @@ class BitvalDebug {
     this.finishInitialTest(tested, found);
   }
 
-  processInitialTestHand(args, hero, villain, stats, tested, found) {
+  async processInitialTestHand(args, hero, villain, stats, tested, found) {
     const state = this.initInitialTestState(stats);
     const progressCallback = this.createInitialProgressCallback(args, hero, villain, stats, tested, found, state);
-    const results = this.testHand(hero, villain, args.tolerance, args.tolerance, args.flops, false, progressCallback);
+    const results = await this.testHand(hero, villain, args.tolerance, args.tolerance, args.flops, false, progressCallback);
     
     return this.processInitialTestResults(args, hero, villain, stats, tested, found, results, state);
   }
@@ -1966,7 +1966,10 @@ class BitvalDebug {
 // Run main if executed directly
 if (require.main === module) {
   const bitvalDebug = new BitvalDebug();
-  bitvalDebug.main();
+  bitvalDebug.main().catch(err => {
+    console.error('Error:', err);
+    process.exit(1);
+  });
 }
 
 module.exports = BitvalDebug;
