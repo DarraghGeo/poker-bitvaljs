@@ -41,7 +41,8 @@ class BitvalDebug {
       dissect: null,
       list: null,
       help: false,
-      optimize: false
+      optimize: false,
+      skipTests: false
     };
   }
 
@@ -55,6 +56,16 @@ class BitvalDebug {
   processArg(arg, args, i) {
     if (arg === "--help" || arg === "-h") {
       args.help = true;
+    } else if (arg.startsWith("--skipTests=")) {
+      args.skipTests = arg.split("=")[1] === "true";
+    } else if (arg === "--skipTests") {
+      const nextArg = i + 1 < process.argv.length ? process.argv[i + 1] : null;
+      if (nextArg && !nextArg.startsWith("--")) {
+        args.skipTests = nextArg === "true" || nextArg === "1";
+        i++;
+      } else {
+        args.skipTests = true;
+      }
     } else if (arg === "--preflops") {
       args.preflops = this.getNextIntArg(i);
     } else if (arg === "--flops") {
@@ -390,14 +401,14 @@ class BitvalDebug {
   }
 
   getHandStrengthFromValue(value) {
-    if (value >= 6185) return "Straight Flush";
-    if (value >= 3325) return "Quads";
-    if (value >= 2467) return "Full House";
-    if (value >= 1609) return "Flush";
-    if (value >= 1599) return "Straight";
-    if (value >= 322) return "Trips";
-    if (value >= 166) return "Two Pair";
-    if (value >= 10) return "Pair";
+    if (value >= 33000) return "Straight Flush";
+    if (value >= 29000) return "Quads";
+    if (value >= 26000) return "Full House";
+    if (value >= 21000) return "Flush";
+    if (value >= 18000) return "Straight";
+    if (value >= 14000) return "Trips";
+    if (value >= 12000) return "Two Pair";
+    if (value >= 6000) return "Pair";
     return "High Card";
   }
 
@@ -1277,8 +1288,11 @@ class BitvalDebug {
     console.log("  --list             List first 25 failed discrepancies (default)");
     console.log("  --list N           List first N failed discrepancies");
     console.log("  --list N-M         List failed discrepancies in range (e.g., --list 1-10)");
-    console.log("  --dissect N        Show detailed bitmask breakdown for hand_id N");
+    console.log("  --dissect N       Show detailed bitmask breakdown for hand_id N");
     console.log("  --dissect \"cards\"  Show detailed bitmask breakdown for hand string (e.g., \"As Ac Ks Qh Jh\")");
+    console.log("  --optimize true    Use canonical key caching for preflop equity calculations (default: false)");
+    console.log("  --optimize false   Disable canonical key caching (use raw evaluations)");
+    console.log("  --skipTests true   Skip startup tests and proceed directly to main testing (default: false)");
     console.log("  --help             Show this help message");
     console.log("");
     console.log("Examples:");
@@ -1294,6 +1308,9 @@ class BitvalDebug {
     console.log("  node find_discrepancies.js --list 10");
     console.log("  node find_discrepancies.js --list 1-20");
     console.log("  node find_discrepancies.js --dissect 10");
+    console.log("  node find_discrepancies.js --optimize=true");
+    console.log("  node find_discrepancies.js --optimize=false");
+    console.log("  node find_discrepancies.js --skipTests=true");
     console.log("");
     console.log("Output:");
     console.log("  Results are written to: debugger/discrepancies.csv");
@@ -1321,9 +1338,13 @@ class BitvalDebug {
       return;
     }
     
-    if (!this.runStartupTests(args.optimize)) {
-      console.error("\n❌ Startup tests failed. Check discrepancies.csv for details.");
-      process.exit(1);
+    if (args.skipTests) {
+      console.log("Skipping startup tests (--skipTests=true)");
+    } else {
+      if (!this.runStartupTests(args.optimize)) {
+        console.error("\n❌ Startup tests failed. Check discrepancies.csv for details.");
+        process.exit(1);
+      }
     }
     
     if (args.retest !== null) {
@@ -1620,9 +1641,11 @@ class BitvalDebug {
   }
 
   processRetestNormalHand(args, row) {
-    const heroCards = row.hero.split(' ');
-    const villainCards = row.villain.split(' ');
-    const board = row.board.split(' ');
+    const heroAllCards = row.hero.split(' ');
+    const villainAllCards = row.villain.split(' ');
+    const board = row.board ? row.board.split(' ') : [];
+    const heroCards = heroAllCards.slice(0, 2);
+    const villainCards = villainAllCards.slice(0, 2);
     
     const equityBitval = this.calculateEquityBitval(heroCards, villainCards, board);
     const equityReference = this.calculateEquityReference(heroCards, villainCards, board);

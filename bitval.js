@@ -1,6 +1,6 @@
 class XorShift32 {
-  constructor() {
-    this.state = 1;
+  constructor(seed = null) {
+    this.state = seed !== null ? seed : Math.floor(Math.random() * 2147483647) || 1;
   }
 
   next(max) {
@@ -472,23 +472,148 @@ class BitVal {
     return this.stripBits(hand, 1);
   }
 
-  _getCanonicalKey(hand) {
-    const rankOrder = 'AKQJT98765432';
-    const r1 = hand[0], r2 = hand[2], s1 = hand[1], s2 = hand[3];
-    const r1Idx = rankOrder.indexOf(r1), r2Idx = rankOrder.indexOf(r2);
-    const high = r1Idx < r2Idx ? r1 : r2, low = r1Idx < r2Idx ? r2 : r1;
-    if (r1 === r2) return high + 'h' + low + 'c';
-    if (s1 === s2) return high + 's' + low + 's';
-    return high + 's' + low + 'h';
+  _getBoardSuitCounts(boardCards) {
+    const suitCounts = new Map();
+    for (const card of boardCards) {
+      const suit = card[1];
+      suitCounts.set(suit, (suitCounts.get(suit) || 0) + 1);
+    }
+    return suitCounts;
   }
 
-  _flattenHandsToCanonical(hands) {
-    const canonicalMap = new Map();
-    for (const hand of hands) {
-      const key = this._getCanonicalKey(hand);
-      canonicalMap.set(key, (canonicalMap.get(key) || 0) + 1);
+  _getCardsToCome(boardCards, numberOfBoardCards) {
+    return numberOfBoardCards - boardCards.length;
+  }
+
+  _suitHasFlushPotential(suit, boardSuitCounts, cardsToCome) {
+    return (boardSuitCounts.get(suit) || 0) + cardsToCome >= 4;
+  }
+
+  _getCanonicalKey(hand, boardCards = [], numberOfBoardCards = 5, boardSuitCounts = null) {
+    const r1 = hand[0], r2 = hand[2], s1 = hand[1], s2 = hand[3];
+    const rankOrder = 'AKQJT98765432';
+    const r1Idx = rankOrder.indexOf(r1), r2Idx = rankOrder.indexOf(r2);
+    const high = r1Idx < r2Idx ? r1 : r2, low = r1Idx < r2Idx ? r2 : r1;
+    const highSuit = r1Idx < r2Idx ? s1 : s2, lowSuit = r1Idx < r2Idx ? s2 : s1;
+    if (boardCards.length === 0) {
+      if (r1 === r2) return high + low;
+      return high + low + (s1 === s2 ? 's' : 'o');
     }
-    return canonicalMap;
+    if (!boardSuitCounts) boardSuitCounts = this._getBoardSuitCounts(boardCards);
+    const cardsToCome = this._getCardsToCome(boardCards, numberOfBoardCards);
+    if (r1 === r2) {
+      const s1Pot = this._suitHasFlushPotential(s1, boardSuitCounts, cardsToCome);
+      const s2Pot = this._suitHasFlushPotential(s2, boardSuitCounts, cardsToCome);
+      if (s1Pot) return high + low + s1;
+      if (s2Pot) return high + low + s2;
+      return high + low;
+    }
+    const highPot = this._suitHasFlushPotential(highSuit, boardSuitCounts, cardsToCome);
+    const lowPot = this._suitHasFlushPotential(lowSuit, boardSuitCounts, cardsToCome);
+    return (highPot ? high + highSuit : high) + (lowPot ? low + lowSuit : low);
+  }
+
+  _flattenHandsToCanonical(hands, boardCards = [], numberOfBoardCards = 5) {
+    const canonicalMap = new Map();
+    const canonicalToHand = new Map();
+    const boardSuitCounts = boardCards.length > 0 ? this._getBoardSuitCounts(boardCards) : null;
+    for (const hand of hands) {
+      const key = this._getCanonicalKey(hand, boardCards, numberOfBoardCards, boardSuitCounts);
+      canonicalMap.set(key, (canonicalMap.get(key) || 0) + 1);
+      if (!canonicalToHand.has(key)) {
+        canonicalToHand.set(key, hand);
+      }
+    }
+    return { canonicalMap, canonicalToHand };
+  }
+
+  _compareRangeSetup(heroHands, villainHands, boardCards, deadCards, numberOfBoardCards, iterations, optimize) {
+    const hCanon = optimize ? this._flattenHandsToCanonical(heroHands, boardCards, numberOfBoardCards) : { canonicalMap: null, canonicalToHand: null };
+    const vCanon = optimize ? this._flattenHandsToCanonical(villainHands, boardCards, numberOfBoardCards) : { canonicalMap: null, canonicalToHand: null };
+    const boardMask = this.getBitMasked(boardCards);
+    const allDeadCards = [...heroHands.flatMap(h => this._handStringToCards(h)), ...villainHands.flatMap(h => this._handStringToCards(h)), ...boardCards, ...deadCards];
+    const deadCardsMask = this.getBitMasked(allDeadCards);
+    const numberOfCardsToDeal = numberOfBoardCards - boardCards.length;
+    const availableCards = 52 - new Set(allDeadCards).size;
+    const exhaustiveCombinations = this.combinations(availableCards, numberOfCardsToDeal);
+    iterations = Math.min(iterations, exhaustiveCombinations);
+    const isExhaustive = iterations === exhaustiveCombinations && numberOfCardsToDeal > 0 && numberOfCardsToDeal <= 2;
+    const comboArray = isExhaustive ? this._getCombinations(this._getAvailableCardMasksByLookUp(deadCardsMask), numberOfCardsToDeal) : null;
+    return { hCanon, vCanon, boardMask, deadCardsMask, iterations, isExhaustive, comboArray, numberOfCardsToDeal };
+  }
+
+  _getCachedEvaluation(canonicalKey, originalHand, completeBoard, evalCache) {
+    const cacheKey = canonicalKey + completeBoard.toString();
+    if (evalCache.has(cacheKey)) return evalCache.get(cacheKey);
+    const handMask = this.getBitMasked(this._handStringToCards(originalHand));
+    const evaluation = this.evaluate(handMask | completeBoard);
+    evalCache.set(cacheKey, evaluation);
+    return evaluation;
+  }
+
+  _compareEvaluations(heroEval, heroKicker, villainEval, villainKicker) {
+    if (heroEval > villainEval || (heroEval === villainEval && heroKicker > villainKicker)) return 1;
+    if (villainEval > heroEval || (villainEval === heroEval && villainKicker > heroKicker)) return -1;
+    return 0;
+  }
+
+  _evaluateMatchup(heroHandMask, villainHandMask, setup) {
+    let matchupWin = 0, matchupTie = 0, matchupLose = 0;
+    if (!setup.isExhaustive) this.xorShift = new XorShift32();
+    for (let i = 0; i < setup.iterations; i++) {
+      const completeBoard = setup.isExhaustive && setup.comboArray ? setup.boardMask | setup.comboArray[i] : this.deal(setup.boardMask, setup.deadCardsMask, setup.numberOfCardsToDeal) | setup.boardMask;
+      const [heroEval, heroKicker] = this.evaluate(heroHandMask | completeBoard);
+      const [villainEval, villainKicker] = this.evaluate(villainHandMask | completeBoard);
+      const result = this._compareEvaluations(heroEval, heroKicker, villainEval, villainKicker);
+      if (result === 1) matchupWin++; else if (result === -1) matchupLose++; else matchupTie++;
+    }
+    return { matchupWin, matchupTie, matchupLose };
+  }
+
+  _compareRangeUnoptimized(heroHands, villainHands, setup) {
+    let win = 0, tie = 0, lose = 0;
+    for (const heroHand of heroHands) {
+      const heroHandMask = this.getBitMasked(this._handStringToCards(heroHand));
+      for (const villainHand of villainHands) {
+        const villainHandMask = this.getBitMasked(this._handStringToCards(villainHand));
+        const { matchupWin, matchupTie, matchupLose } = this._evaluateMatchup(heroHandMask, villainHandMask, setup);
+        win += matchupWin; tie += matchupTie; lose += matchupLose;
+      }
+    }
+    return { win, tie, lose };
+  }
+
+  _evaluateMatchupCached(heroCanonicalKey, heroOriginalHand, villainCanonicalKey, villainOriginalHand, setup, evalCache) {
+    let matchupWin = 0, matchupTie = 0, matchupLose = 0;
+    if (!setup.isExhaustive) this.xorShift = new XorShift32();
+    for (let i = 0; i < setup.iterations; i++) {
+      const completeBoard = setup.isExhaustive && setup.comboArray ? setup.boardMask | setup.comboArray[i] : this.deal(setup.boardMask, setup.deadCardsMask, setup.numberOfCardsToDeal) | setup.boardMask;
+      const [heroEval, heroKicker] = this._getCachedEvaluation(heroCanonicalKey, heroOriginalHand, completeBoard, evalCache);
+      const [villainEval, villainKicker] = this._getCachedEvaluation(villainCanonicalKey, villainOriginalHand, completeBoard, evalCache);
+      const result = this._compareEvaluations(heroEval, heroKicker, villainEval, villainKicker);
+      if (result === 1) matchupWin++; else if (result === -1) matchupLose++; else matchupTie++;
+    }
+    return { matchupWin, matchupTie, matchupLose };
+  }
+
+  _processMatchupOptimized(heroCanonicalKey, heroOriginalHand, heroMultiplier, villainCanonicalKey, villainOriginalHand, villainMultiplier, setup, evalCache) {
+    const { matchupWin, matchupTie, matchupLose } = this._evaluateMatchupCached(heroCanonicalKey, heroOriginalHand, villainCanonicalKey, villainOriginalHand, setup, evalCache);
+    const totalMultiplier = heroMultiplier * villainMultiplier;
+    return { win: matchupWin * totalMultiplier, tie: matchupTie * totalMultiplier, lose: matchupLose * totalMultiplier };
+  }
+
+  _compareRangeOptimized(setup) {
+    let win = 0, tie = 0, lose = 0;
+    const evalCache = new Map();
+    for (const [heroCanonicalKey, heroMultiplier] of setup.hCanon.canonicalMap) {
+      const heroOriginalHand = setup.hCanon.canonicalToHand.get(heroCanonicalKey);
+      for (const [villainCanonicalKey, villainMultiplier] of setup.vCanon.canonicalMap) {
+        const villainOriginalHand = setup.vCanon.canonicalToHand.get(villainCanonicalKey);
+        const { win: w, tie: t, lose: l } = this._processMatchupOptimized(heroCanonicalKey, heroOriginalHand, heroMultiplier, villainCanonicalKey, villainOriginalHand, villainMultiplier, setup, evalCache);
+        win += w; tie += t; lose += l;
+      }
+    }
+    return { win, tie, lose };
   }
 
   _handStringToCards(hand) {
@@ -502,32 +627,8 @@ class BitVal {
   }
 
   compareRange(heroHands, villainHands, boardCards = [], deadCards = [], numberOfBoardCards = 5, iterations = 10000, optimize = true) {
-    let win = 0, tie = 0, lose = 0;
-    if (!optimize) {
-      for (const h of heroHands) {
-        for (const v of villainHands) {
-          const r = this._simulateMatchup(h, v, boardCards, deadCards, numberOfBoardCards, iterations);
-          win += r.win; tie += r.tie; lose += r.lose;
-        }
-      }
-      return { win, tie, lose };
-    }
-    const hCanon = this._flattenHandsToCanonical(heroHands);
-    const vCanon = this._flattenHandsToCanonical(villainHands);
-    const cache = new Map();
-    for (const [hk, hm] of hCanon) {
-      for (const [vk, vm] of vCanon) {
-        const ck = hk + vk;
-        let r = cache.get(ck);
-        if (!r) {
-          r = this._simulateMatchup(hk, vk, boardCards, deadCards, numberOfBoardCards, iterations);
-          cache.set(ck, r);
-        }
-        const m = hm * vm;
-        win += r.win * m; tie += r.tie * m; lose += r.lose * m;
-      }
-    }
-    return { win, tie, lose };
+    const setup = this._compareRangeSetup(heroHands, villainHands, boardCards, deadCards, numberOfBoardCards, iterations, optimize);
+    return optimize ? this._compareRangeOptimized(setup) : this._compareRangeUnoptimized(heroHands, villainHands, setup);
   }
 }
 
