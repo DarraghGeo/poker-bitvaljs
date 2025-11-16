@@ -16,7 +16,7 @@ High-performance poker hand evaluator optimized for browser environments, using 
 ## Installation
 
 ```bash
-npm install bitval
+npm install poker-bitvaljs
 ```
 
 ## Usage
@@ -24,7 +24,7 @@ npm install bitval
 ### Basic Hand Evaluation
 
 ```javascript
-const BitVal = require('bitval');
+const BitVal = require('poker-bitvaljs');
 const bitval = new BitVal();
 
 // Evaluate a hand (7 cards: 2 hole cards + 5 board cards)
@@ -38,7 +38,7 @@ const [evaluation, kickers] = bitval.evaluate(handMask);
 ### Range vs Range Comparison
 
 ```javascript
-const BitVal = require('bitval');
+const BitVal = require('poker-bitvaljs');
 const bitval = new BitVal();
 
 // Compare two ranges
