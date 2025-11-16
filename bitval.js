@@ -88,6 +88,8 @@ class BitVal {
       '2c': this._TWO << this._CLUB
     }
 
+    this.ALL_CARD_MASKS = Object.values(this.CARD_MASKS);
+
     this.PAIR_SCORE = 1n << 56n;
     this.TWO_PAIRS_SCORE = 1n << 57n;
     this.TRIPS_SCORE = 1n << 58n;
@@ -239,8 +241,8 @@ class BitVal {
 
     for (let i = 0; i < numberOfCards; i++) {
       do {
-        card = 1n << BigInt(this.xorShift.next(52));
-      } while ((card & deck) == 0n);
+        card = this.ALL_CARD_MASKS[this.xorShift.next(52)];
+      } while ((card & deck) !== card);
 
       hand |= card;
       deck &= ~card;

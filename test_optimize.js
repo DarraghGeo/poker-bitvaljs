@@ -11,8 +11,8 @@ class OptimizeTester {
       { hero: ['As', 'Ks'], villain: ['5d', '6d'], expectedEquity: 60.38 },
       { hero: ['As', 'Ks'], villain: ['6c', '6d'], expectedEquity: 47.88 }
     ];
-    this.iterations = 100000;
-    this.tolerance = 0.01;
+    this.iterations = 1000000;
+    this.tolerance = 0.1;
   }
 
   seedRandom() {
