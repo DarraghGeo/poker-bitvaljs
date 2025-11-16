@@ -82,7 +82,7 @@ class BitvalDebug {
       if (nextArg && !nextArg.startsWith('--') && isNaN(parseInt(nextArg, 10))) {
         args.dissect = nextArg;
       } else {
-        args.dissect = this.getNextIntArg(i);
+      args.dissect = this.getNextIntArg(i);
       }
     } else if (arg === "--list") {
       args.list = this.getListArg(i);
@@ -837,8 +837,8 @@ class BitvalDebug {
             riversTested: results.riversTested || 0,
             riverDiscrepancies: results.riverCount || 0
           });
-        }
-      }
+    }
+  }
     }
   }
 
