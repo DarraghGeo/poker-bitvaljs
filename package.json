@@ -1,5 +1,24 @@
 {
-  "dependencies": {
-    "poker-rangeman": "^3.1.0"
-  }
+  "name": "bitval",
+  "version": "1.0.0",
+  "description": "High-performance poker hand evaluator using bitwise operations",
+  "main": "bitval.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [
+    "poker",
+    "hand",
+    "evaluator",
+    "bitwise",
+    "equity",
+    "simulation",
+    "texas-holdem"
+  ],
+  "author": "",
+  "license": "ISC",
+  "files": [
+    "bitval.js",
+    "README.md"
+  ]
 }

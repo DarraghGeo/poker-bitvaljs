@@ -1,4 +1,8 @@
 .DS_Store
+node_modules/
 
 # Test files
 *_tests.js
+
+# Debug output
+discrepancies.csv

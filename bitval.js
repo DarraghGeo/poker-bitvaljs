@@ -529,13 +529,16 @@ class BitVal {
     return { canonicalMap, canonicalToHand };
   }
 
-  _generateValidMatchups(heroHands, villainHands) {
+  _generateValidMatchups(heroHands, villainHands, boardCards = []) {
     const valid = [];
+    const boardMask = boardCards.length > 0 ? this.getBitMasked(boardCards) : 0n;
     for (const h of heroHands) {
       const hMask = this.getBitMasked(this._handStringToCards(h));
+      if (boardMask && (hMask & boardMask) !== 0n) continue;
       for (const v of villainHands) {
         const vMask = this.getBitMasked(this._handStringToCards(v));
-        if ((hMask & vMask) === 0n) valid.push({ heroHand: h, villainHand: v, heroMask: hMask, villainMask: vMask });
+        if ((vMask & boardMask) !== 0n || (hMask & vMask) !== 0n) continue;
+        valid.push({ heroHand: h, villainHand: v, heroMask: hMask, villainMask: vMask });
       }
     }
     return valid;
@@ -554,7 +557,7 @@ class BitVal {
   }
 
   _compareRangeSetup(heroHands, villainHands, boardCards, deadCards, numberOfBoardCards, iterations, optimize) {
-    const validMatchups = this._generateValidMatchups(heroHands, villainHands);
+    const validMatchups = this._generateValidMatchups(heroHands, villainHands, boardCards);
     const hCanon = optimize ? this._flattenHandsToCanonical(heroHands, boardCards, numberOfBoardCards) : null;
     const vCanon = optimize ? this._flattenHandsToCanonical(villainHands, boardCards, numberOfBoardCards) : null;
     const validCounts = optimize ? this._calculateValidCounts(validMatchups, hCanon, vCanon, boardCards, numberOfBoardCards) : null;
@@ -589,17 +592,28 @@ class BitVal {
     let win = 0, tie = 0, lose = 0;
     const deadMask = heroMask | villainMask | setup.deadCardsMask;
     if (!setup.isExhaustive) this.xorShift = new XorShift32();
+    
+    // For exhaustive, generate comboArray excluding THIS matchup's hero/villain cards
+    let comboArray = null;
+    let iterations = setup.iterations;
+    if (setup.isExhaustive) {
+      const matchupDeadMask = heroMask | villainMask | setup.deadCardsMask;
+      const availableMasks = this._getAvailableCardMasksByLookUp(matchupDeadMask);
+      comboArray = this._getCombinations(availableMasks, setup.numberOfCardsToDeal);
+      iterations = comboArray.length;
+    }
+    
     const yieldInterval = 1000;
-    for (let i = 0; i < setup.iterations; i++) {
-      const board = setup.isExhaustive && setup.comboArray ? setup.boardMask | setup.comboArray[i] : this.deal(setup.boardMask, deadMask, setup.numberOfCardsToDeal) | setup.boardMask;
+    for (let i = 0; i < iterations; i++) {
+      const board = setup.isExhaustive && comboArray ? setup.boardMask | comboArray[i] : this.deal(setup.boardMask, deadMask, setup.numberOfCardsToDeal) | setup.boardMask;
       const [hEval, hKick] = evalCache ? this._getCachedEvaluation(evalCache.heroKey, evalCache.heroHand, board, evalCache.cache) : this.evaluate(heroMask | board);
       const [vEval, vKick] = evalCache ? this._getCachedEvaluation(evalCache.villainKey, evalCache.villainHand, board, evalCache.cache) : this.evaluate(villainMask | board);
       const result = this._compareEvaluations(hEval, hKick, vEval, vKick);
       if (result === 1) win++; else if (result === -1) lose++; else tie++;
       if (progressCallback && i > 0 && i % yieldInterval === 0) {
-        const total = totalMatchups * setup.iterations;
-        const current = matchupIndex * setup.iterations + i;
-        progressCallback(current, total, `Matchup ${matchupIndex + 1}/${totalMatchups}: ${i.toLocaleString()}/${setup.iterations.toLocaleString()}`);
+        const total = totalMatchups * iterations;
+        const current = matchupIndex * iterations + i;
+        progressCallback(current, total, `Matchup ${matchupIndex + 1}/${totalMatchups}: ${i.toLocaleString()}/${iterations.toLocaleString()}`);
         await new Promise(resolve => setTimeout(resolve, 0));
       }
     }
@@ -639,26 +653,22 @@ class BitVal {
           matchupIndex++;
           continue;
         }
-        // If representative hands overlap, find a valid pair from validMatchups
-        let evalHand = hHand, evalVillain = vHand, evalHMask = hMask, evalVMask = vMask;
-        if ((hMask & vMask) !== 0n) {
-          const boardSuitCounts = setup.boardCards.length > 0 ? this._getBoardSuitCounts(setup.boardCards) : null;
-          const validPair = setup.validMatchups.find(m => {
-            const mHKey = this._getCanonicalKey(m.heroHand, setup.boardCards, setup.numberOfBoardCards, boardSuitCounts);
-            const mVKey = this._getCanonicalKey(m.villainHand, setup.boardCards, setup.numberOfBoardCards, boardSuitCounts);
-            return mHKey === hKey && mVKey === vKey;
-          });
-          if (validPair) {
-            evalHand = validPair.heroHand;
-            evalVillain = validPair.villainHand;
-            evalHMask = validPair.heroMask;
-            evalVMask = validPair.villainMask;
-          } else {
-            console.error(`[DIAG] ERROR: No valid pair found for ${hKey}:${vKey} despite validCount=${validCount}`);
-            matchupIndex++;
-            continue;
-          }
+        // ALWAYS find a valid pair from validMatchups to ensure no board overlap
+        const boardSuitCounts = setup.boardCards.length > 0 ? this._getBoardSuitCounts(setup.boardCards) : null;
+        const validPair = setup.validMatchups.find(m => {
+          const mHKey = this._getCanonicalKey(m.heroHand, setup.boardCards, setup.numberOfBoardCards, boardSuitCounts);
+          const mVKey = this._getCanonicalKey(m.villainHand, setup.boardCards, setup.numberOfBoardCards, boardSuitCounts);
+          return mHKey === hKey && mVKey === vKey;
+        });
+        if (!validPair) {
+          console.error(`[DIAG] ERROR: No valid pair found for ${hKey}:${vKey} despite validCount=${validCount}`);
+          matchupIndex++;
+          continue;
         }
+        const evalHand = validPair.heroHand;
+        const evalVillain = validPair.villainHand;
+        const evalHMask = validPair.heroMask;
+        const evalVMask = validPair.villainMask;
         const cache = { heroKey: hKey, heroHand: evalHand, villainKey: vKey, villainHand: evalVillain, cache: evalCache };
         const { matchupWin, matchupTie, matchupLose } = await this._evaluateMatchup(evalHMask, evalVMask, setup, cache, progressCallback, matchupIndex, totalMatchups);
         win += matchupWin * validCount; tie += matchupTie * validCount; lose += matchupLose * validCount;
