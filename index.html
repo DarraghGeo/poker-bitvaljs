@@ -277,11 +277,11 @@
             </div>
             
             <div class="form-group">
-                <label for="iterations">Iterations: <span id="iterationsValue">100,000</span></label>
-                <input type="range" id="iterations" min="1000" max="1000000" step="1000" value="100000" style="width: 100%; margin-top: 8px;">
+                <label for="iterations">Iterations: <span id="iterationsValue">1,000</span></label>
+                <input type="range" id="iterations" min="1000" max="100000" step="1000" value="1000" style="width: 100%; margin-top: 8px;">
                 <div style="display: flex; justify-content: space-between; font-size: 12px; color: #666; margin-top: 4px;">
                     <span>1,000</span>
-                    <span>1,000,000</span>
+                    <span>100,000</span>
                 </div>
             </div>
             
@@ -523,6 +523,11 @@
                 `;
                 
                 // Display benchmarks
+                const totalMatchups = result.win + result.tie + result.lose;
+                const totalHandCombinations = player1Hands.length * player2Hands.length;
+                const throughput = totalMatchups / (executionTime / 1000);
+                const avgTimePerMatchup = executionTime / totalMatchups;
+                
                 const benchmarksDiv = document.getElementById('benchmarks');
                 benchmarksDiv.innerHTML = `
                     <div class="benchmark-item">
@@ -530,16 +535,24 @@
                         <span class="benchmark-value">${executionTime.toFixed(2)} ms</span>
                     </div>
                     <div class="benchmark-item">
-                        <span class="benchmark-label">Iterations:</span>
+                        <span class="benchmark-label">Total Matchups Evaluated:</span>
+                        <span class="benchmark-value">${totalMatchups.toLocaleString()}</span>
+                    </div>
+                    <div class="benchmark-item">
+                        <span class="benchmark-label">Iterations per Matchup:</span>
                         <span class="benchmark-value">${iterations.toLocaleString()}</span>
                     </div>
                     <div class="benchmark-item">
                         <span class="benchmark-label">Player 1 Hands:</span>
-                        <span class="benchmark-value">${player1Hands.length}</span>
+                        <span class="benchmark-value">${player1Hands.length.toLocaleString()}</span>
                     </div>
                     <div class="benchmark-item">
                         <span class="benchmark-label">Player 2 Hands:</span>
-                        <span class="benchmark-value">${player2Hands.length}</span>
+                        <span class="benchmark-value">${player2Hands.length.toLocaleString()}</span>
+                    </div>
+                    <div class="benchmark-item">
+                        <span class="benchmark-label">Total Hand Combinations:</span>
+                        <span class="benchmark-value">${totalHandCombinations.toLocaleString()}</span>
                     </div>
                     <div class="benchmark-item">
                         <span class="benchmark-label">Board Cards:</span>
@@ -551,7 +564,11 @@
                     </div>
                     <div class="benchmark-item">
                         <span class="benchmark-label">Throughput:</span>
-                        <span class="benchmark-value">${(iterations / (executionTime / 1000)).toFixed(0)} iterations/sec</span>
+                        <span class="benchmark-value">${Math.round(throughput).toLocaleString()} matchups/sec</span>
+                    </div>
+                    <div class="benchmark-item">
+                        <span class="benchmark-label">Avg Time per Matchup:</span>
+                        <span class="benchmark-value">${avgTimePerMatchup.toFixed(3)} ms</span>
                     </div>
                 `;
                 

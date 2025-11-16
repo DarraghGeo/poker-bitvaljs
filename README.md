@@ -2,6 +2,8 @@
 
 High-performance poker hand evaluator optimized for browser environments, using bitwise operations for rapid poker hand analysis and equity calculations.
 
+**🌐 [Try it online - Range vs Range Evaluator](https://darraghgeo.github.io/poker-bitvaljs/)**
+
 ## Features
 
 - **Fast hand evaluation** using bitwise operations
@@ -155,6 +157,8 @@ Compares two ranges of hands with optional optimization.
 - Canonical key caching reduces redundant evaluations (may introduce ±0.5% margin of error)
 - Exhaustive enumeration for flop/turn (2 or fewer cards to come)
 - Monte Carlo simulation for preflop and river scenarios
+
+**Test performance and benchmark online:** [https://darraghgeo.github.io/poker-bitvaljs/](https://darraghgeo.github.io/poker-bitvaljs/)
 
 ## License
 

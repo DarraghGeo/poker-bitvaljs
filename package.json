@@ -15,8 +15,12 @@
     "simulation",
     "texas-holdem"
   ],
-  "author": "",
+  "author": "Darragh Geoghegan",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/DarraghGeo/poker-bitvaljs.git"
+  },
   "files": [
     "bitval.js",
     "README.md"
