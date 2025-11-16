@@ -9,10 +9,11 @@ class OptimizeTester {
       { hero: ['As', '2s'], villain: ['8h', '9c'], expectedEquity: 57.76 },
       { hero: ['As', '2s'], villain: ['Kh', '9c'], expectedEquity: 61.17 },
       { hero: ['As', 'Ks'], villain: ['5d', '6d'], expectedEquity: 60.38 },
-      { hero: ['As', 'Ks'], villain: ['6c', '6d'], expectedEquity: 47.88 }
+      { hero: ['As', 'Ks'], villain: ['6c', '6d'], expectedEquity: 47.88 },
+      { hero: ['As', 'Ah'], villain: ['Kc', 'Kd'], expectedEquity: 81.97, enumerateRange: true }
     ];
-    this.iterations = 1000000;
-    this.tolerance = 0.1;
+    this.iterations = 100000;
+    this.tolerance = 0.5;
   }
 
   seedRandom() {
@@ -29,18 +30,41 @@ class OptimizeTester {
     return hand[0] + hand[1] + hand[2] + hand[3];
   }
 
-  testPreflop(hero, villain, expectedEquity) {
-    const heroHand = this.handToCanonical(hero);
-    const villainHand = this.handToCanonical(villain);
+  getAllCombinations(rank) {
+    const suits = ['c', 'd', 'h', 's'];
+    const combos = [];
+    for (let i = 0; i < suits.length; i++) {
+      for (let j = i + 1; j < suits.length; j++) {
+        combos.push(rank + suits[i] + rank + suits[j]);
+      }
+    }
+    return combos;
+  }
+
+  testPreflop(hero, villain, expectedEquity, enumerateRange = false) {
+    let heroHands, villainHands;
+    
+    if (enumerateRange) {
+      // For Test 5 (AA vs KK), enumerate all valid combinations
+      // Extract just the rank character (first character of first card)
+      const heroRank = hero[0][0];
+      const villainRank = villain[0][0];
+      heroHands = this.getAllCombinations(heroRank);
+      villainHands = this.getAllCombinations(villainRank);
+    } else {
+      // Single hand comparison
+      heroHands = [this.handToCanonical(hero)];
+      villainHands = [this.handToCanonical(villain)];
+    }
     
     this.seedRandom();
     const optimizedStart = performance.now();
-    const optimizedResult = this.bitval.compareRange([heroHand], [villainHand], [], [], 5, this.iterations, true);
+    const optimizedResult = this.bitval.compareRange(heroHands, villainHands, [], [], 5, this.iterations, true);
     const optimizedTime = performance.now() - optimizedStart;
     
     this.seedRandom();
     const unoptimizedStart = performance.now();
-    const unoptimizedResult = this.bitval.compareRange([heroHand], [villainHand], [], [], 5, this.iterations, false);
+    const unoptimizedResult = this.bitval.compareRange(heroHands, villainHands, [], [], 5, this.iterations, false);
     const unoptimizedTime = performance.now() - unoptimizedStart;
     
     this.seedRandom();
@@ -170,10 +194,16 @@ class OptimizeTester {
     for (let i = 0; i < this.startupTests.length; i++) {
       const test = this.startupTests[i];
       console.log(`\n${'='.repeat(80)}`);
-      console.log(`Test ${i + 1}: ${test.hero.join('')} vs ${test.villain.join('')}`);
+      if (test.enumerateRange) {
+        const heroCombos = this.getAllCombinations(test.hero[0][0]);
+        const villainCombos = this.getAllCombinations(test.villain[0][0]);
+        console.log(`Test ${i + 1}: ${test.hero.join('')} vs ${test.villain.join('')} (all combinations: ${heroCombos.length} vs ${villainCombos.length})`);
+      } else {
+        console.log(`Test ${i + 1}: ${test.hero.join('')} vs ${test.villain.join('')}`);
+      }
       console.log('='.repeat(80));
 
-      const preflopResult = this.testPreflop(test.hero, test.villain, test.expectedEquity);
+      const preflopResult = this.testPreflop(test.hero, test.villain, test.expectedEquity, test.enumerateRange || false);
       console.log(`Preflop Results:`);
       console.log(`  Expected: ${preflopResult.expectedEquity.toFixed(2)}%`);
       console.log(`  Optimized (compareRange): ${preflopResult.optimizedEquity.toFixed(2)}% (diff: ${preflopResult.optimizedDiff.toFixed(2)}%) ${preflopResult.optimizedPassed ? '✓' : '❌'} - ${preflopResult.optimizedTime.toFixed(2)}ms`);

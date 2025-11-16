@@ -1,0 +1,487 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>BitVal Range vs Range Evaluator</title>
+    <style>
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+        }
+        
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            padding: 20px;
+        }
+        
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+            background: white;
+            border-radius: 12px;
+            box-shadow: 0 20px 60px rgba(0,0,0,0.3);
+            padding: 30px;
+        }
+        
+        h1 {
+            color: #333;
+            margin-bottom: 30px;
+            text-align: center;
+            font-size: 2em;
+        }
+        
+        .form-group {
+            margin-bottom: 20px;
+        }
+        
+        label {
+            display: block;
+            margin-bottom: 8px;
+            color: #555;
+            font-weight: 600;
+        }
+        
+        input[type="text"] {
+            width: 100%;
+            padding: 12px;
+            border: 2px solid #e0e0e0;
+            border-radius: 6px;
+            font-size: 16px;
+            transition: border-color 0.3s;
+        }
+        
+        input[type="text"]:focus {
+            outline: none;
+            border-color: #667eea;
+        }
+        
+        .checkbox-group {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+        
+        input[type="checkbox"] {
+            width: 20px;
+            height: 20px;
+            cursor: pointer;
+        }
+        
+        button {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            border: none;
+            padding: 14px 28px;
+            font-size: 16px;
+            font-weight: 600;
+            border-radius: 6px;
+            cursor: pointer;
+            width: 100%;
+            transition: transform 0.2s, box-shadow 0.2s;
+        }
+        
+        button:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 5px 15px rgba(102, 126, 234, 0.4);
+        }
+        
+        button:active {
+            transform: translateY(0);
+        }
+        
+        button:disabled {
+            opacity: 0.6;
+            cursor: not-allowed;
+            transform: none;
+        }
+        
+        .results {
+            margin-top: 30px;
+            padding: 20px;
+            background: #f8f9fa;
+            border-radius: 8px;
+            display: none;
+        }
+        
+        .results.show {
+            display: block;
+        }
+        
+        .equity-display {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 20px;
+            margin-bottom: 30px;
+        }
+        
+        .equity-card {
+            background: white;
+            padding: 20px;
+            border-radius: 8px;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+        }
+        
+        .equity-card h3 {
+            color: #667eea;
+            margin-bottom: 10px;
+        }
+        
+        .equity-value {
+            font-size: 2.5em;
+            font-weight: bold;
+            color: #333;
+            margin: 10px 0;
+        }
+        
+        .benchmark-section {
+            margin-top: 20px;
+        }
+        
+        .benchmark-section h3 {
+            color: #333;
+            margin-bottom: 15px;
+        }
+        
+        .benchmark-item {
+            display: flex;
+            justify-content: space-between;
+            padding: 10px;
+            background: white;
+            margin-bottom: 8px;
+            border-radius: 6px;
+            border-left: 4px solid #667eea;
+        }
+        
+        .benchmark-label {
+            font-weight: 600;
+            color: #555;
+        }
+        
+        .benchmark-value {
+            color: #333;
+            font-family: 'Courier New', monospace;
+        }
+        
+        .error {
+            background: #fee;
+            color: #c33;
+            padding: 15px;
+            border-radius: 6px;
+            margin-top: 20px;
+            border-left: 4px solid #c33;
+        }
+        
+        .loading {
+            text-align: center;
+            padding: 20px;
+            color: #667eea;
+            font-weight: 600;
+        }
+        
+        @media (max-width: 768px) {
+            .equity-display {
+                grid-template-columns: 1fr;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🎴 BitVal Range vs Range Evaluator</h1>
+        
+        <form id="evaluationForm">
+            <div class="form-group">
+                <label for="player1Range">Player 1 Range:</label>
+                <input type="text" id="player1Range" placeholder="e.g., AA, KK, AKs, AKo" value="AA, KK">
+            </div>
+            
+            <div class="form-group">
+                <label for="player2Range">Player 2 Range:</label>
+                <input type="text" id="player2Range" placeholder="e.g., 22+, A2s+, A2o+" value="22+, A2s+, A2o+">
+            </div>
+            
+            <div class="form-group">
+                <label for="boardCards">Board Cards (optional):</label>
+                <input type="text" id="boardCards" placeholder="e.g., As Ks Qs or leave empty for preflop">
+            </div>
+            
+            <div class="form-group">
+                <div class="checkbox-group">
+                    <input type="checkbox" id="optimize" checked>
+                    <label for="optimize">Enable Canonical Caching (Optimize)</label>
+                </div>
+            </div>
+            
+            <button type="submit" id="evaluateBtn">Evaluate</button>
+        </form>
+        
+        <div id="error" class="error" style="display: none;"></div>
+        <div id="loading" class="loading" style="display: none;">Evaluating...</div>
+        
+        <div id="results" class="results">
+            <div class="equity-display">
+                <div class="equity-card">
+                    <h3>Player 1 Equity</h3>
+                    <div class="equity-value" id="player1Equity">-</div>
+                    <div id="player1Details"></div>
+                </div>
+                <div class="equity-card">
+                    <h3>Player 2 Equity</h3>
+                    <div class="equity-value" id="player2Equity">-</div>
+                    <div id="player2Details"></div>
+                </div>
+            </div>
+            
+            <div class="benchmark-section">
+                <h3>📊 Benchmarks</h3>
+                <div id="benchmarks"></div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Load bitval.js as a regular script (works with file:// and GitHub Pages) -->
+    <script src="./bitval.js"></script>
+    
+    <!-- Load poker-rangeman.js as a regular script for file:// protocol fallback -->
+    <script src="./poker-rangeman.js"></script>
+    
+    <script type="module">
+        // Load RangeManager from GitHub raw URL (works on GitHub Pages) or fallback to local script
+        let RangeManager;
+        
+        async function loadRangeManager() {
+            // Try GitHub raw URL first (works on http/https, not file://)
+            if (window.location.protocol === 'http:' || window.location.protocol === 'https:') {
+                try {
+                    const module = await import('https://raw.githubusercontent.com/DarraghGeo/poker-rangeman/refs/heads/main/src/rangeManager.js');
+                    RangeManager = module.RangeManager || module.default?.RangeManager || module.default;
+                    if (RangeManager) {
+                        console.log('Loaded RangeManager from GitHub');
+                        return RangeManager;
+                    }
+                } catch (e) {
+                    console.warn('Failed to load from GitHub, using local script:', e);
+                }
+            }
+            
+            // For file:// protocol, wait for the regular script tag to load
+            if (window.location.protocol === 'file:') {
+                return new Promise((resolve, reject) => {
+                    if (window.RangeManager) {
+                        console.log('Loaded RangeManager from local script');
+                        resolve(window.RangeManager);
+                        return;
+                    }
+                    
+                    // Wait for script to load
+                    const checkInterval = setInterval(() => {
+                        if (window.RangeManager) {
+                            clearInterval(checkInterval);
+                            console.log('Loaded RangeManager from local script');
+                            resolve(window.RangeManager);
+                        }
+                    }, 50);
+                    
+                    setTimeout(() => {
+                        clearInterval(checkInterval);
+                        if (!window.RangeManager) {
+                            reject(new Error('RangeManager script failed to load'));
+                        }
+                    }, 5000);
+                });
+            }
+            
+            throw new Error('RangeManager could not be loaded');
+        }
+        
+        let bitval;
+        let RangeManagerClass;
+        
+        async function init() {
+            // BitVal is loaded via script tag, so it's available as window.BitVal
+            bitval = new window.BitVal();
+            
+            try {
+                RangeManagerClass = await loadRangeManager();
+            } catch (e) {
+                const errorDiv = document.getElementById('error');
+                errorDiv.textContent = 'Error loading RangeManager: ' + e.message;
+                errorDiv.style.display = 'block';
+                console.error('Failed to load RangeManager:', e);
+                return;
+            }
+            
+            document.getElementById('evaluationForm').addEventListener('submit', handleSubmit);
+        }
+        
+        function parseBoardCards(boardStr) {
+            if (!boardStr || !boardStr.trim()) return [];
+            return boardStr.trim().split(/\s+/).filter(c => c);
+        }
+        
+        function parseRange(rangeStr) {
+            if (!rangeStr || !rangeStr.trim()) return [];
+            if (!RangeManagerClass) {
+                throw new Error('RangeManager not loaded');
+            }
+            try {
+                // Use RangeManager to parse the range notation
+                // RangeManager constructor: new RangeManager(input, deadCards?)
+                const rm = new RangeManagerClass(rangeStr);
+                // toArray() returns array of hand strings like ["AsKs", "AhKh", ...]
+                return rm.toArray();
+            } catch (e) {
+                console.error('Error parsing range:', e);
+                throw new Error('Invalid range format: ' + e.message);
+            }
+        }
+        
+        async function handleSubmit(e) {
+            e.preventDefault();
+            
+            const errorDiv = document.getElementById('error');
+            const loadingDiv = document.getElementById('loading');
+            const resultsDiv = document.getElementById('results');
+            const evaluateBtn = document.getElementById('evaluateBtn');
+            
+            errorDiv.style.display = 'none';
+            resultsDiv.classList.remove('show');
+            loadingDiv.style.display = 'block';
+            evaluateBtn.disabled = true;
+            
+            try {
+                const player1RangeStr = document.getElementById('player1Range').value;
+                const player2RangeStr = document.getElementById('player2Range').value;
+                const boardStr = document.getElementById('boardCards').value;
+                const optimize = document.getElementById('optimize').checked;
+                
+                // Parse inputs
+                const player1Hands = parseRange(player1RangeStr);
+                const player2Hands = parseRange(player2RangeStr);
+                const boardCards = parseBoardCards(boardStr);
+                
+                console.log('Parsed player1Hands:', player1Hands);
+                console.log('Parsed player2Hands:', player2Hands);
+                console.log('Parsed boardCards:', boardCards);
+                
+                if (player1Hands.length === 0) {
+                    throw new Error('Player 1 range is required');
+                }
+                if (player2Hands.length === 0) {
+                    throw new Error('Player 2 range is required');
+                }
+                
+                // RangeManager.toArray() returns hands as 4-character strings like "AsKs"
+                // bitval.compareRange expects an array of these strings
+                const player1HandsFormatted = player1Hands;
+                const player2HandsFormatted = player2Hands;
+                
+                // Determine number of board cards and iterations
+                const numberOfBoardCards = 5;
+                const iterations = 100000;
+                
+                console.log('Calling compareRange with:', {
+                    player1Hands: player1HandsFormatted.length,
+                    player2Hands: player2HandsFormatted.length,
+                    boardCards: boardCards.length,
+                    iterations: iterations,
+                    optimize: optimize
+                });
+                
+                // Benchmark
+                const startTime = performance.now();
+                const result = bitval.compareRange(
+                    player1HandsFormatted,
+                    player2HandsFormatted,
+                    boardCards,
+                    [],
+                    numberOfBoardCards,
+                    iterations,
+                    optimize
+                );
+                const endTime = performance.now();
+                const executionTime = endTime - startTime;
+                
+                // Debug: log the result
+                console.log('compareRange result:', result);
+                console.log('result.win:', result?.win, 'result.tie:', result?.tie, 'result.lose:', result?.lose);
+                
+                // Calculate equities
+                if (!result || typeof result.win !== 'number' || typeof result.tie !== 'number' || typeof result.lose !== 'number') {
+                    throw new Error('Invalid result from compareRange: ' + JSON.stringify(result));
+                }
+                
+                const total = result.win + result.lose + result.tie;
+                const player1Equity = total > 0 ? ((result.win + result.tie / 2) / total) * 100 : 50;
+                const player2Equity = total > 0 ? ((result.lose + result.tie / 2) / total) * 100 : 50;
+                
+                // Display results
+                document.getElementById('player1Equity').textContent = player1Equity.toFixed(2) + '%';
+                document.getElementById('player2Equity').textContent = player2Equity.toFixed(2) + '%';
+                
+                document.getElementById('player1Details').innerHTML = `
+                    <div>Wins: ${result.win.toLocaleString()}</div>
+                    <div>Ties: ${result.tie.toLocaleString()}</div>
+                    <div>Losses: ${result.lose.toLocaleString()}</div>
+                `;
+                
+                document.getElementById('player2Details').innerHTML = `
+                    <div>Wins: ${result.lose.toLocaleString()}</div>
+                    <div>Ties: ${result.tie.toLocaleString()}</div>
+                    <div>Losses: ${result.win.toLocaleString()}</div>
+                `;
+                
+                // Display benchmarks
+                const benchmarksDiv = document.getElementById('benchmarks');
+                benchmarksDiv.innerHTML = `
+                    <div class="benchmark-item">
+                        <span class="benchmark-label">Execution Time:</span>
+                        <span class="benchmark-value">${executionTime.toFixed(2)} ms</span>
+                    </div>
+                    <div class="benchmark-item">
+                        <span class="benchmark-label">Iterations:</span>
+                        <span class="benchmark-value">${iterations.toLocaleString()}</span>
+                    </div>
+                    <div class="benchmark-item">
+                        <span class="benchmark-label">Player 1 Hands:</span>
+                        <span class="benchmark-value">${player1Hands.length}</span>
+                    </div>
+                    <div class="benchmark-item">
+                        <span class="benchmark-label">Player 2 Hands:</span>
+                        <span class="benchmark-value">${player2Hands.length}</span>
+                    </div>
+                    <div class="benchmark-item">
+                        <span class="benchmark-label">Board Cards:</span>
+                        <span class="benchmark-value">${boardCards.length || 0}</span>
+                    </div>
+                    <div class="benchmark-item">
+                        <span class="benchmark-label">Optimize Mode:</span>
+                        <span class="benchmark-value">${optimize ? 'Enabled' : 'Disabled'}</span>
+                    </div>
+                    <div class="benchmark-item">
+                        <span class="benchmark-label">Throughput:</span>
+                        <span class="benchmark-value">${(iterations / (executionTime / 1000)).toFixed(0)} iterations/sec</span>
+                    </div>
+                `;
+                
+                resultsDiv.classList.add('show');
+            } catch (error) {
+                errorDiv.textContent = 'Error: ' + error.message;
+                errorDiv.style.display = 'block';
+                console.error('Evaluation error:', error);
+            } finally {
+                loadingDiv.style.display = 'none';
+                evaluateBtn.disabled = false;
+            }
+        }
+        
+        // Initialize when page loads
+        init();
+    </script>
+</body>
+</html>
+

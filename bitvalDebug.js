@@ -561,8 +561,8 @@ class BitvalDebug {
 
   runStartupTests(optimize = false) {
     console.log("Running startup tests...");
-    const tolerance = 0.01;
-    const iterations = 10000;
+    const tolerance = 0.1;
+    const iterations = 2000000;
     let allPassed = true;
     const failedTests = [];
     

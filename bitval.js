@@ -634,4 +634,9 @@ class BitVal {
   }
 }
 
-if (typeof module !== 'undefined') module.exports = BitVal;
+if (typeof module !== 'undefined' && module.exports) {
+  module.exports = BitVal;
+}
+if (typeof window !== 'undefined') {
+  window.BitVal = BitVal;
+}
