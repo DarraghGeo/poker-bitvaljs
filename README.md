@@ -1,6 +1,6 @@
 # BitVal
 
-High-performance poker hand evaluator using bitwise operations for rapid poker hand analysis and equity calculations.
+High-performance poker hand evaluator optimized for browser environments, using bitwise operations for rapid poker hand analysis and equity calculations.
 
 ## Features
 
@@ -143,7 +143,7 @@ Compares two ranges of hands with optional optimization.
 - `deadCards` (Array): Dead cards as strings (default: `[]`)
 - `numberOfBoardCards` (Number): Total board cards (default: `5`)
 - `iterations` (Number): Number of simulations per matchup (default: `10000`)
-- `optimize` (Boolean): Use canonical key caching (default: `true`)
+- `optimize` (Boolean): Use canonical key caching for performance (default: `true`). **Note:** Optimizations may result in a ±0.5% margin of error compared to unoptimized calculations.
 - `progressCallback` (Function): Optional callback `(current, total, message) => {}`
 
 **Returns:**
@@ -151,8 +151,8 @@ Compares two ranges of hands with optional optimization.
 
 ## Performance
 
-- Uses bitwise operations for maximum speed
-- Canonical key caching reduces redundant evaluations
+- **Optimized for browser environments** with efficient bitwise operations
+- Canonical key caching reduces redundant evaluations (may introduce ±0.5% margin of error)
 - Exhaustive enumeration for flop/turn (2 or fewer cards to come)
 - Monte Carlo simulation for preflop and river scenarios
 
