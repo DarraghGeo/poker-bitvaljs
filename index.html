@@ -341,38 +341,34 @@
                         return RangeManager;
                     }
                 } catch (e) {
-                    console.warn('Failed to load from GitHub, using local script:', e);
+                    console.warn('Failed to load from GitHub, trying local script:', e);
                 }
             }
             
-            // For file:// protocol, wait for the regular script tag to load
-            if (window.location.protocol === 'file:') {
-                return new Promise((resolve, reject) => {
+            // Fallback to local script (works for both file:// and http/https)
+            return new Promise((resolve, reject) => {
+                if (window.RangeManager) {
+                    console.log('Loaded RangeManager from local script');
+                    resolve(window.RangeManager);
+                    return;
+                }
+                
+                // Wait for script to load
+                const checkInterval = setInterval(() => {
                     if (window.RangeManager) {
+                        clearInterval(checkInterval);
                         console.log('Loaded RangeManager from local script');
                         resolve(window.RangeManager);
-                        return;
                     }
-                    
-                    // Wait for script to load
-                    const checkInterval = setInterval(() => {
-                        if (window.RangeManager) {
-                            clearInterval(checkInterval);
-                            console.log('Loaded RangeManager from local script');
-                            resolve(window.RangeManager);
-                        }
-                    }, 50);
-                    
-                    setTimeout(() => {
-                        clearInterval(checkInterval);
-                        if (!window.RangeManager) {
-                            reject(new Error('RangeManager script failed to load'));
-                        }
-                    }, 5000);
-                });
-            }
-            
-            throw new Error('RangeManager could not be loaded');
+                }, 50);
+                
+                setTimeout(() => {
+                    clearInterval(checkInterval);
+                    if (!window.RangeManager) {
+                        reject(new Error('RangeManager script failed to load'));
+                    }
+                }, 5000);
+            });
         }
         
         let bitval;

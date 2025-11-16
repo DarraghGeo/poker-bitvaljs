@@ -16,7 +16,7 @@
     "texas-holdem"
   ],
   "author": "",
-  "license": "ISC",
+  "license": "MIT",
   "files": [
     "bitval.js",
     "README.md"
