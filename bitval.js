@@ -420,6 +420,7 @@ class BitVal {
 
   /**
    * Deals random cards from the deck, excluding dead cards.
+   * Optimized version that pre-computes available cards to avoid collision loops.
    * @param {BigInt} hand - Current hand bitmask
    * @param {BigInt} deadCards - Dead cards bitmask (default: 0n)
    * @param {Number} numberOfCards - Number of cards to deal (default: 7)
@@ -427,16 +428,21 @@ class BitVal {
    */
   deal(hand, deadCards = 0n, numberOfCards = 7) {
     if (numberOfCards < 1) return hand;
-    let deck = ~(hand | deadCards);
-    let card;
-
+    
+    // Pre-compute available cards once (major optimization - eliminates do-while collision loop)
+    const availableCards = this._getAvailableCardMasksByLookUp(hand | deadCards);
+    const availableCount = availableCards.length;
+    
+    if (availableCount < numberOfCards) return hand;
+    
+    // Use Fisher-Yates style selection with direct indexing (much faster than do-while)
     for (let i = 0; i < numberOfCards; i++) {
-      do {
-        card = this.ALL_CARD_MASKS[this.xorShift.next(52)];
-      } while ((card & deck) !== card);
-
+      const randomIndex = this.xorShift.next(availableCount - i);
+      const card = availableCards[randomIndex];
       hand |= card;
-      deck &= ~card;
+      
+      // Swap selected card with last unselected card (Fisher-Yates shuffle)
+      availableCards[randomIndex] = availableCards[availableCount - 1 - i];
     }
 
     return hand;
@@ -675,6 +681,7 @@ class BitVal {
 
   /**
    * Evaluates a single matchup with optional caching.
+   * Optimized for browser performance with adaptive yielding and inlined hot loop.
    * @private
    */
   async _evaluateMatchup(heroMask, villainMask, setup, evalCache = null, progressCallback = null, matchupIndex = 0, totalMatchups = 1) {
@@ -695,39 +702,73 @@ class BitVal {
       iterations = comboArray.length;
     }
     
-    // Determine evaluation functions based on caching
-    const evaluateHero = evalCache 
-      ? (board) => this._getCachedEvaluation(evalCache.heroKey, evalCache.heroHand, board, evalCache.cache)
-      : (board) => this.evaluate(heroMask | board);
+    // Main evaluation loop - optimized with inlined functions and adaptive yielding
+    const yieldInterval = 5000; // Increased from 1000 - reduces async overhead while maintaining responsiveness
+    let lastProgressTime = 0;
+    const progressUpdateInterval = 100; // Update progress at most every 100ms
     
-    const evaluateVillain = evalCache
-      ? (board) => this._getCachedEvaluation(evalCache.villainKey, evalCache.villainHand, board, evalCache.cache)
-      : (board) => this.evaluate(villainMask | board);
-    
-    // Main evaluation loop
-    const yieldInterval = 1000;
     for (let i = 0; i < iterations; i++) {
       // Generate board: use pre-computed combo for exhaustive, or deal randomly
       const board = setup.isExhaustive 
         ? setup.boardMask | comboArray[i]
         : this.deal(setup.boardMask, deadMask, setup.numberOfCardsToDeal) | setup.boardMask;
       
-      // Evaluate both hands
-      const [hEval, hKick] = evaluateHero(board);
-      const [vEval, vKick] = evaluateVillain(board);
+      // Evaluate both hands - inlined for performance (no function call overhead)
+      let hEval, hKick, vEval, vKick;
+      if (evalCache) {
+        [hEval, hKick] = this._getCachedEvaluation(evalCache.heroKey, evalCache.heroHand, board, evalCache.cache);
+        [vEval, vKick] = this._getCachedEvaluation(evalCache.villainKey, evalCache.villainHand, board, evalCache.cache);
+      } else {
+        [hEval, hKick] = this.evaluate(heroMask | board);
+        [vEval, vKick] = this.evaluate(villainMask | board);
+      }
       
-      // Compare and accumulate results
-      const result = this._compareEvaluations(hEval, hKick, vEval, vKick);
-      if (result === 1) win++;
-      else if (result === -1) lose++;
-      else tie++;
+      // Compare and accumulate results - inlined for performance
+      if (hEval > vEval || (hEval === vEval && hKick > vKick)) {
+        win++;
+      } else if (vEval > hEval || (vEval === hEval && vKick > hKick)) {
+        lose++;
+      } else {
+        tie++;
+      }
       
-      // Yield control periodically for UI responsiveness
+      // Adaptive yielding: less frequent but still maintains UI responsiveness
       if (progressCallback && i > 0 && i % yieldInterval === 0) {
-        const total = totalMatchups * iterations;
-        const current = matchupIndex * iterations + i;
-        progressCallback(current, total, `Matchup ${matchupIndex + 1}/${totalMatchups}: ${i.toLocaleString()}/${iterations.toLocaleString()}`);
-        await new Promise(resolve => setTimeout(resolve, 0));
+        const now = Date.now();
+        const shouldUpdateProgress = now - lastProgressTime >= progressUpdateInterval;
+        
+        // Use modern browser APIs for better scheduling when available
+        if (typeof scheduler !== 'undefined' && scheduler.postTask) {
+          await scheduler.postTask(() => {
+            if (shouldUpdateProgress) {
+              const total = totalMatchups * iterations;
+              const current = matchupIndex * iterations + i;
+              progressCallback(current, total, `Matchup ${matchupIndex + 1}/${totalMatchups}: ${i.toLocaleString()}/${iterations.toLocaleString()}`);
+              lastProgressTime = now;
+            }
+          }, { priority: 'user-blocking' });
+        } else if (typeof requestIdleCallback !== 'undefined') {
+          await new Promise(resolve => {
+            requestIdleCallback(() => {
+              if (shouldUpdateProgress) {
+                const total = totalMatchups * iterations;
+                const current = matchupIndex * iterations + i;
+                progressCallback(current, total, `Matchup ${matchupIndex + 1}/${totalMatchups}: ${i.toLocaleString()}/${iterations.toLocaleString()}`);
+                lastProgressTime = now;
+              }
+              resolve();
+            }, { timeout: 1 });
+          });
+        } else {
+          // Fallback to setTimeout
+          await new Promise(resolve => setTimeout(resolve, 0));
+          if (shouldUpdateProgress) {
+            const total = totalMatchups * iterations;
+            const current = matchupIndex * iterations + i;
+            progressCallback(current, total, `Matchup ${matchupIndex + 1}/${totalMatchups}: ${i.toLocaleString()}/${iterations.toLocaleString()}`);
+            lastProgressTime = now;
+          }
+        }
       }
     }
     
@@ -741,13 +782,44 @@ class BitVal {
   async _compareRangeUnoptimized(heroHands, villainHands, setup, progressCallback = null) {
     let win = 0, tie = 0, lose = 0;
     const total = setup.validMatchups.length;
+    let lastProgressTime = 0;
+    const progressUpdateInterval = 100; // Update progress at most every 100ms
+    
     for (let i = 0; i < total; i++) {
       const { heroMask, villainMask } = setup.validMatchups[i];
       const { matchupWin, matchupTie, matchupLose } = await this._evaluateMatchup(heroMask, villainMask, setup, null, progressCallback, i, total);
       win += matchupWin; tie += matchupTie; lose += matchupLose;
+      
       if (progressCallback && i % 10 === 0) {
-        progressCallback(i, total, `Evaluating ${i}/${total}`);
-        await new Promise(resolve => setTimeout(resolve, 0));
+        const now = Date.now();
+        const shouldUpdateProgress = now - lastProgressTime >= progressUpdateInterval;
+        
+        // Use modern browser APIs for better scheduling when available
+        if (typeof scheduler !== 'undefined' && scheduler.postTask) {
+          await scheduler.postTask(() => {
+            if (shouldUpdateProgress) {
+              progressCallback(i, total, `Evaluating ${i}/${total}`);
+              lastProgressTime = now;
+            }
+          }, { priority: 'user-blocking' });
+        } else if (typeof requestIdleCallback !== 'undefined') {
+          await new Promise(resolve => {
+            requestIdleCallback(() => {
+              if (shouldUpdateProgress) {
+                progressCallback(i, total, `Evaluating ${i}/${total}`);
+                lastProgressTime = now;
+              }
+              resolve();
+            }, { timeout: 1 });
+          });
+        } else {
+          // Fallback to setTimeout
+          await new Promise(resolve => setTimeout(resolve, 0));
+          if (shouldUpdateProgress) {
+            progressCallback(i, total, `Evaluating ${i}/${total}`);
+            lastProgressTime = now;
+          }
+        }
       }
     }
     if (progressCallback) progressCallback(total, total, 'Complete');
@@ -761,6 +833,8 @@ class BitVal {
   async _compareRangeOptimized(setup, progressCallback = null) {
     let win = 0, tie = 0, lose = 0;
     const evalCache = new Map();
+    let lastProgressTime = 0;
+    const progressUpdateInterval = 100; // Update progress at most every 100ms
     
     // Pre-calculate board suit counts once (constant for all matchups)
     const boardSuitCounts = setup.boardCards.length > 0 
@@ -840,8 +914,35 @@ class BitVal {
         
         matchupIndex++;
         if (progressCallback && matchupIndex % 10 === 0) {
-          progressCallback(matchupIndex, totalMatchups, `Evaluating ${matchupIndex}`);
-          await new Promise(resolve => setTimeout(resolve, 0));
+          const now = Date.now();
+          const shouldUpdateProgress = now - lastProgressTime >= progressUpdateInterval;
+          
+          // Use modern browser APIs for better scheduling when available
+          if (typeof scheduler !== 'undefined' && scheduler.postTask) {
+            await scheduler.postTask(() => {
+              if (shouldUpdateProgress) {
+                progressCallback(matchupIndex, totalMatchups, `Evaluating ${matchupIndex}`);
+                lastProgressTime = now;
+              }
+            }, { priority: 'user-blocking' });
+          } else if (typeof requestIdleCallback !== 'undefined') {
+            await new Promise(resolve => {
+              requestIdleCallback(() => {
+                if (shouldUpdateProgress) {
+                  progressCallback(matchupIndex, totalMatchups, `Evaluating ${matchupIndex}`);
+                  lastProgressTime = now;
+                }
+                resolve();
+              }, { timeout: 1 });
+            });
+          } else {
+            // Fallback to setTimeout
+            await new Promise(resolve => setTimeout(resolve, 0));
+            if (shouldUpdateProgress) {
+              progressCallback(matchupIndex, totalMatchups, `Evaluating ${matchupIndex}`);
+              lastProgressTime = now;
+            }
+          }
         }
       }
     }
