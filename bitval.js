@@ -15,10 +15,13 @@ class XorShift32 {
 
 class BitVal {
   constructor() {
+    // Suit constants
     this._DIAMOND = 3n;
     this._HEART = 2n;
     this._CLUB = 1n;
     this._SPADE = 0n;
+    
+    // Rank constants
     this._ACE = (1n << 52n) | 1n;
     this._KING = 1n << 48n;
     this._QUEEN = 1n << 44n;
@@ -33,6 +36,7 @@ class BitVal {
     this._THREE = 1n << 8n;
     this._TWO = 1n << 4n;
 
+    // Card masks lookup table
     this.CARD_MASKS = {
       'As': this._ACE << this._SPADE,
       'Ah': this._ACE << this._HEART,
@@ -90,6 +94,7 @@ class BitVal {
 
     this.ALL_CARD_MASKS = Object.values(this.CARD_MASKS);
 
+    // Hand strength score constants
     this.PAIR_SCORE = 1n << 56n;
     this.TWO_PAIRS_SCORE = 1n << 57n;
     this.TRIPS_SCORE = 1n << 58n;
@@ -99,11 +104,13 @@ class BitVal {
     this.QUADS_SCORE = 1n << 62n;
     this.STRAIGHT_FLUSH_SCORE = 1n << 63n;
 
+    // Bit manipulation constants
     this.BIT_1 = BigInt("0b00010001000100010001000100010001000100010001000100010001");
     this.BIT_2 = BigInt("0b00100010001000100010001000100010001000100010001000100010");
     this.BIT_3 = BigInt("0b01000100010001000100010001000100010001000100010001000100");
     this.BIT_4 = BigInt("0b10001000100010001000100010001000100010001000100010001000");
 
+    // Rank masks for kicker extraction
     this.RANK_MASKS = [
       240n,
       3840n,
@@ -138,6 +145,67 @@ class BitVal {
     };
   }
 
+  // ============================================
+  // PUBLIC API - Core Hand Evaluation
+  // ============================================
+
+  /**
+   * Evaluates a poker hand represented as a BigInt bitmask.
+   * @param {BigInt} handMask - Bitmask representing 5-7 cards
+   * @returns {Array} [evaluation, kickers] - Evaluation score and kicker bits
+   */
+  evaluate(hand) {
+    let response = 0n;
+    if (response = this._bitStraightFlush(hand)) {
+      return [response | this.STRAIGHT_FLUSH_SCORE, null];
+    }
+
+    if (response = this._bitQuads(hand)) {
+      let quadsRanksMask = this._getRankMaskFromBitmask(response);
+      let kickers = this._extractKickers(hand, quadsRanksMask, 1);
+      return [(response | this.QUADS_SCORE), kickers];
+    }
+
+    let trips = this._bitTrips(hand) & (0xFFFFFFFFFFFF0n | (1n << 52n));
+    let pairs = this._bitPairs(hand) & (0xFFFFFFFFFFFF0n | (1n << 52n));
+
+    if ((trips && pairs && trips ^ pairs) || this.countBits(trips) > 1) {
+      return [trips | this.FULL_HOUSE_SCORE, this.stripBits(pairs & ~trips, 1)];
+    }
+
+    if (response = this._bitFlush(hand)) {
+      return [response | this.FLUSH_SCORE, null];
+    }
+
+    if (response = this._bitStraight(hand)) {
+      return [response | this.STRAIGHT_SCORE, null];
+    }
+
+    if (response = trips) {
+      let tripsRanksMask = this._getRankMaskFromBitmask(response);
+      let kickers = this._extractKickers(hand, tripsRanksMask, 2);
+      return [(response | this.TRIPS_SCORE), kickers];
+    }
+
+    if (response = pairs) {
+      if (this.countBits(response) > 1) {
+        let pairRanksMask = this._getTwoPairRanksMask(response);
+        let kickers = this._extractKickers(hand, pairRanksMask, 1);
+        return [(response | this.TWO_PAIRS_SCORE), kickers];
+    }
+      let pairRanksMask = this._getRankMaskFromBitmask(response);
+      let kickers = this._extractKickers(hand, pairRanksMask, 3);
+      return [(response | this.PAIR_SCORE), kickers];
+    }
+
+    return [this.stripBits(this.normalize(hand), 5), null];
+  }
+
+  /**
+   * Gets the human-readable hand strength from an evaluation mask.
+   * @param {BigInt} handMask - Evaluation mask with score bits
+   * @returns {String} Hand strength name
+   */
   getHandStrengthFromMask(handMask) {
     if (handMask & this.PAIR_SCORE) {
       return "Pair";
@@ -166,6 +234,16 @@ class BitVal {
     return "High Card";
   }
 
+  /**
+   * Simulates a single hand vs hand matchup using Monte Carlo or exhaustive enumeration.
+   * @param {Number} iterations - Number of simulations
+   * @param {Number} numberOfBoardCards - Total board cards (default: 5)
+   * @param {Array} hero - Hero's hole cards as array of strings
+   * @param {Array} villain - Villain's hole cards as array of strings
+   * @param {Array} board - Board cards as array of strings
+   * @param {Array} deadCards - Dead cards as array of strings
+   * @returns {Object} { win, tie, lose, ...handStrengths } - Results object
+   */
   simulate(iterations, numberOfBoardCards = 5, hero = [], villain = [], board = [], deadCards = []) {
     let numberOfCardsToDeal = (numberOfBoardCards + 2) - (hero.length + board.length);
     this.xorShift = new XorShift32();
@@ -234,6 +312,119 @@ class BitVal {
     return result;
   }
 
+  // ============================================
+  // PUBLIC API - Range Comparison
+  // ============================================
+
+  /**
+   * Compares two ranges of hands with optional canonical key caching optimization.
+   * @param {Array} heroHands - Array of hero hand strings (e.g., ['AsAh', 'AsAd'])
+   * @param {Array} villainHands - Array of villain hand strings
+   * @param {Array} boardCards - Board cards as strings (default: [])
+   * @param {Array} deadCards - Dead cards as strings (default: [])
+   * @param {Number} numberOfBoardCards - Total board cards (default: 5)
+   * @param {Number} iterations - Number of simulations per matchup (default: 10000)
+   * @param {Boolean} optimize - Use canonical key caching (default: true)
+   * @param {Function} progressCallback - Optional progress callback (current, total, message)
+   * @returns {Promise<Object>} { win, tie, lose } - Results object
+   */
+  async compareRange(heroHands, villainHands, boardCards = [], deadCards = [], numberOfBoardCards = 5, iterations = 10000, optimize = true, progressCallback = null) {
+    const setup = this._compareRangeSetup(heroHands, villainHands, boardCards, deadCards, numberOfBoardCards, iterations, optimize);
+    return optimize ? await this._compareRangeOptimized(setup, progressCallback) : await this._compareRangeUnoptimized(heroHands, villainHands, setup, progressCallback);
+  }
+
+  // ============================================
+  // PUBLIC API - Utility Methods
+  // ============================================
+
+  /**
+   * Converts an array of card strings to a BigInt bitmask.
+   * @param {Array} cards - Array of card strings (e.g., ['As', 'Kh', 'Qd'])
+   * @returns {BigInt} Bitmask representing the cards
+   */
+  getBitMasked(cards) {
+    let sf_mask = 0n;
+
+    for (let card of cards) {
+      sf_mask |= this.CARD_MASKS[card];
+    }
+
+    return sf_mask;
+  }
+
+  /**
+   * Counts the number of set bits in a bitmask.
+   * @param {BigInt} handMask - Bitmask to count
+   * @returns {Number} Number of set bits
+   */
+  countBits(handMask) {
+    let count = 0;
+
+    while (handMask) {
+      handMask &= (handMask - 1n);
+      count++;
+    }
+    return count;
+  }
+
+  /**
+   * Calculates combinations C(n, k).
+   * @param {Number} n - Total items
+   * @param {Number} k - Items to choose
+   * @returns {Number} Number of combinations
+   */
+  combinations(n, k) {
+    if (k > n || k < 0) return 0;
+    if (k === 0 || k === n) return 1;
+    k = Math.min(k, n - k);
+    let result = 1;
+    for (let i = 0; i < k; i++) {
+      result = result * (n - i) / (i + 1);
+    }
+    return Math.floor(result);
+  }
+
+  /**
+   * Normalizes a hand bitmask by extracting rank information.
+   * @param {BigInt} hand - Hand bitmask
+   * @param {Number} bitShift - Bit shift amount (default: 4)
+   * @returns {BigInt} Normalized bitmask
+   */
+  normalize(hand, bitShift = 4) {
+    let shift_bits = ((hand | hand >> 1n | hand >> 2n | hand >> 3n) & this.BIT_1) >> 4n;
+    let normal_bits = 0n;
+    bitShift = BigInt(bitShift);
+
+    for (let i = 0n; i < 13n; i++) {
+      let bit = (shift_bits & (1n << i * bitShift)) >> i * bitShift;
+      normal_bits += bit << i;
+    }
+    return normal_bits;
+  }
+
+  /**
+   * Strips bits from a hand mask to reduce it to desired size.
+   * @param {BigInt} hand - Hand bitmask
+   * @param {Number} desiredSizeOfMask - Desired number of bits (default: 5)
+   * @returns {BigInt} Stripped bitmask
+   */
+  stripBits(hand, desiredSizeOfMask = 5) {
+    let numberOfBitsToStrip = this.countBits(hand) - desiredSizeOfMask;
+
+    while (numberOfBitsToStrip > 0) {
+      hand &= (hand - 1n);
+      numberOfBitsToStrip--;
+    }
+    return hand;
+  }
+
+  /**
+   * Deals random cards from the deck, excluding dead cards.
+   * @param {BigInt} hand - Current hand bitmask
+   * @param {BigInt} deadCards - Dead cards bitmask (default: 0n)
+   * @param {Number} numberOfCards - Number of cards to deal (default: 7)
+   * @returns {BigInt} Hand bitmask with new cards added
+   */
   deal(hand, deadCards = 0n, numberOfCards = 7) {
     if (numberOfCards < 1) return hand;
     let deck = ~(hand | deadCards);
@@ -251,6 +442,100 @@ class BitVal {
     return hand;
   }
 
+  // ============================================
+  // PRIVATE - Core Bitwise Evaluation Helpers
+  // ============================================
+
+  /**
+   * Detects pairs in a hand using bitwise operations.
+   * @private
+   */
+  _bitPairs(hand) {
+    let pairs = ( 
+      ((this.BIT_1 & hand) << 1n) & (this.BIT_2 & hand) |
+      ((this.BIT_1 & hand) << 2n) & (this.BIT_3 & hand) |
+      ((this.BIT_1 & hand) << 3n) & (this.BIT_4 & hand) |
+      ((this.BIT_2 & hand) << 1n) & (this.BIT_3 & hand) |
+      ((this.BIT_2 & hand) << 2n) & (this.BIT_4 & hand) |
+      ((this.BIT_3 & hand) << 1n) & (this.BIT_4 & hand));
+    pairs = (pairs >> 1n | pairs >> 2n | pairs >> 3n) & this.BIT_1;
+    return this.stripBits(pairs, 2);
+  }
+
+  /**
+   * Detects trips (three of a kind) in a hand using bitwise operations.
+   * @private
+   */
+  _bitTrips(hand) {
+    let a = (((this.BIT_1 & hand) << 1n & (this.BIT_2 & hand)) << 1n & (this.BIT_3 & hand)) >> 2n;
+    let b = (((this.BIT_2 & hand) << 1n & (this.BIT_3 & hand)) << 1n & (this.BIT_4 & hand)) >> 3n;
+    let c = (((this.BIT_1 & hand) << 2n & (this.BIT_3 & hand)) << 1n & (this.BIT_4 & hand)) >> 3n;
+    let d = (((this.BIT_1 & hand) << 1n & (this.BIT_2 & hand)) << 2n & (this.BIT_4 & hand)) >> 3n;
+    return this.stripBits((a | b | c | d) & this.BIT_1, 1);
+  }
+
+  /**
+   * Detects a flush in a hand using bitwise operations.
+   * @private
+   */
+  _bitFlush(hand) {
+    let i = 0n;
+    while (i < 4) {
+      if (this.countBits((hand >> 4n) & (this.BIT_1 << i)) >= 5) {
+        return this.stripBits(((hand >> 4n) & (this.BIT_1 << i)) >> i, 5);
+      }
+      i++;
+    }
+    return 0n;
+  }
+
+  /**
+   * Detects a straight in a hand using bitwise operations.
+   * @private
+   */
+  _bitStraight(hand) {
+    hand = (hand | hand >> 1n | hand >> 2n | hand >> 3n) & this.BIT_1;
+
+    hand = hand & 
+      (hand << 4n) & 
+      (hand << 8n) & 
+      (hand << 12n) & 
+      (hand << 16n);
+
+    return this.stripBits(hand, 1);
+  }
+
+  /**
+   * Detects quads (four of a kind) in a hand using bitwise operations.
+   * @private
+   */
+  _bitQuads(hand) {
+    return ((((
+      (hand & this.BIT_1) << 1n &
+      (hand & this.BIT_2)) << 1n &
+      (hand & this.BIT_3)) << 1n &
+      (hand & this.BIT_4))
+      & this.BIT_4) >> 3n;
+  }
+
+  /**
+   * Detects a straight flush in a hand using bitwise operations.
+   * @private
+   */
+  _bitStraightFlush(hand) {
+    hand = hand & 
+      (hand << 4n) & 
+      (hand << 8n) & 
+      (hand << 12n) & 
+      (hand << 16n);
+
+    return this.stripBits(hand, 1);
+  }
+
+  /**
+   * Extracts kicker bits from a hand given the made hand rank mask.
+   * @private
+   */
   _extractKickers(hand, madeHandRanksMask, numKickers) {
     const kickersOnly = hand & ~madeHandRanksMask;
     let kickerValue = 0n;
@@ -267,12 +552,20 @@ class BitVal {
     return kickerValue;
   }
 
+  /**
+   * Gets the rank mask from a bitmask for kicker extraction.
+   * @private
+   */
   _getRankMaskFromBitmask(bitmask) {
     return (this.RANK_MASK_LOOKUP[bitmask & 1n] || 0n) |
       (this.RANK_MASK_LOOKUP[bitmask & (1n << 52n)] || 0n) |
       (this.RANK_MASK_LOOKUP[bitmask] || 0n);
   }
 
+  /**
+   * Gets the rank mask for two pairs.
+   * @private
+   */
   _getTwoPairRanksMask(pairsBitmask) {
     const firstBit = pairsBitmask & -pairsBitmask;
     const firstMask = this._getRankMaskFromBitmask(firstBit);
@@ -284,213 +577,306 @@ class BitVal {
     return firstMask | secondMask;
   }
 
-  normalize(hand, bitShift = 4) {
-    let shift_bits = ((hand | hand >> 1n | hand >> 2n | hand >> 3n) & this.BIT_1) >> 4n;
-    let normal_bits = 0n;
-    bitShift = BigInt(bitShift);
+  // ============================================
+  // PRIVATE - Range Comparison Helpers
+  // ============================================
 
-    for (let i = 0n; i < 13n; i++) {
-      let bit = (shift_bits & (1n << i * bitShift)) >> i * bitShift;
-      normal_bits += bit << i;
-    }
-    return normal_bits;
-  }
-
-  stripBits(hand, desiredSizeOfMask = 5) {
-    let numberOfBitsToStrip = this.countBits(hand) - desiredSizeOfMask;
-
-    while (numberOfBitsToStrip > 0) {
-      hand &= (hand - 1n);
-      numberOfBitsToStrip--;
-    }
-    return hand;
-  }
-
-  getBitMasked(cards) {
-    let sf_mask = 0n;
-
-    for (let card of cards) {
-      sf_mask |= this.CARD_MASKS[card];
-    }
-
-    return sf_mask;
-  }
-
-  countBits(handMask) {
-    let count = 0;
-
-    while (handMask) {
-      handMask &= (handMask - 1n);
-      count++;
-    }
-    return count;
-  }
-
-  combinations(n, k) {
-    if (k > n || k < 0) return 0;
-    if (k === 0 || k === n) return 1;
-    k = Math.min(k, n - k);
-    let result = 1;
-    for (let i = 0; i < k; i++) {
-      result = result * (n - i) / (i + 1);
-    }
-    return Math.floor(result);
-  }
-
-  _getAvailableCardMasksByLookUp(deadCards) {
-    let masks = [];
-    let deck = ~deadCards;
-
-    for (const card in this.CARD_MASKS) {
-      const cardMask = this.CARD_MASKS[card];
-      if ((cardMask & deck) === cardMask) {
-        masks.push(cardMask);
+  /**
+   * Generates all valid matchups between hero and villain hands, excluding overlaps.
+   * @private
+   */
+  _generateValidMatchups(heroHands, villainHands, boardCards = []) {
+    const valid = [];
+    const boardMask = boardCards.length > 0 ? this.getBitMasked(boardCards) : 0n;
+    for (const h of heroHands) {
+      const hMask = this.getBitMasked(this._handStringToCards(h));
+      if (boardMask && (hMask & boardMask) !== 0n) continue;
+      for (const v of villainHands) {
+        const vMask = this.getBitMasked(this._handStringToCards(v));
+        if ((vMask & boardMask) !== 0n || (hMask & vMask) !== 0n) continue;
+        valid.push({ heroHand: h, villainHand: v, heroMask: hMask, villainMask: vMask });
       }
     }
-
-    return masks;
+    return valid;
   }
 
-  _getCombinations(availableMasks, k) {
-    if (k === 1) return availableMasks;
-    if (k === 2) {
-      let combos = [];
-      for (let i = 0; i < availableMasks.length; i++) {
-        for (let j = i + 1; j < availableMasks.length; j++) {
-          combos.push(availableMasks[i] | availableMasks[j]);
+  /**
+   * Calculates valid matchup counts per canonical key pair.
+   * @private
+   */
+  _calculateValidCounts(validMatchups, hCanon, vCanon, boardCards, numberOfBoardCards) {
+    const counts = new Map();
+    const boardSuitCounts = boardCards.length > 0 ? this._getBoardSuitCounts(boardCards) : null;
+    for (const { heroHand, villainHand } of validMatchups) {
+      const hKey = this._getCanonicalKey(heroHand, boardCards, numberOfBoardCards, boardSuitCounts);
+      const vKey = this._getCanonicalKey(villainHand, boardCards, numberOfBoardCards, boardSuitCounts);
+      const key = `${hKey}:${vKey}`;
+      counts.set(key, (counts.get(key) || 0) + 1);
+    }
+    return counts;
+  }
+
+  /**
+   * Sets up range comparison by generating valid matchups and canonical mappings.
+   * @private
+   */
+  _compareRangeSetup(heroHands, villainHands, boardCards, deadCards, numberOfBoardCards, iterations, optimize) {
+    // Generate valid matchups (always needed)
+    const validMatchups = this._generateValidMatchups(heroHands, villainHands, boardCards);
+    
+    // Calculate canonical mappings only if optimization is enabled
+    let hCanon = null;
+    let vCanon = null;
+    let validCounts = null;
+    if (optimize) {
+      hCanon = this._flattenHandsToCanonical(heroHands, boardCards, numberOfBoardCards);
+      vCanon = this._flattenHandsToCanonical(villainHands, boardCards, numberOfBoardCards);
+      validCounts = this._calculateValidCounts(validMatchups, hCanon, vCanon, boardCards, numberOfBoardCards);
+    }
+    
+    // Calculate bitmasks
+    const boardMask = this.getBitMasked(boardCards);
+    const deadCardsMask = this.getBitMasked([...boardCards, ...deadCards]);
+    
+    // Calculate cards to deal and determine if exhaustive enumeration is possible
+    const numberOfCardsToDeal = numberOfBoardCards - boardCards.length;
+    const canBeExhaustive = numberOfCardsToDeal > 0 && numberOfCardsToDeal <= 2;
+    
+    // Calculate available cards using bitmask (more efficient than Set)
+    const availableCards = 52 - this.countBits(deadCardsMask);
+    
+    // Determine if we should use exhaustive enumeration
+    const exhaustiveCombinations = canBeExhaustive 
+      ? this.combinations(availableCards, numberOfCardsToDeal) 
+      : Infinity;
+    iterations = Math.min(iterations, exhaustiveCombinations);
+    const isExhaustive = canBeExhaustive && iterations === exhaustiveCombinations && exhaustiveCombinations < Infinity;
+    
+    // Generate combo array only if exhaustive
+    const comboArray = isExhaustive 
+      ? this._getCombinations(this._getAvailableCardMasksByLookUp(deadCardsMask), numberOfCardsToDeal) 
+      : null;
+    
+    return { 
+      hCanon, 
+      vCanon, 
+      boardMask, 
+      deadCardsMask, 
+      iterations, 
+      isExhaustive, 
+      comboArray, 
+      numberOfCardsToDeal, 
+      validMatchups, 
+      validCounts, 
+      boardCards, 
+      numberOfBoardCards 
+    };
+  }
+
+  /**
+   * Evaluates a single matchup with optional caching.
+   * @private
+   */
+  async _evaluateMatchup(heroMask, villainMask, setup, evalCache = null, progressCallback = null, matchupIndex = 0, totalMatchups = 1) {
+    let win = 0, tie = 0, lose = 0;
+    const deadMask = heroMask | villainMask | setup.deadCardsMask;
+    
+    // Initialize random number generator for Monte Carlo (not needed for exhaustive)
+    if (!setup.isExhaustive) {
+      this.xorShift = new XorShift32();
+    }
+    
+    // Prepare for exhaustive enumeration if applicable
+    let comboArray = null;
+    let iterations = setup.iterations;
+    if (setup.isExhaustive) {
+      const availableMasks = this._getAvailableCardMasksByLookUp(deadMask);
+      comboArray = this._getCombinations(availableMasks, setup.numberOfCardsToDeal);
+      iterations = comboArray.length;
+    }
+    
+    // Determine evaluation functions based on caching
+    const evaluateHero = evalCache 
+      ? (board) => this._getCachedEvaluation(evalCache.heroKey, evalCache.heroHand, board, evalCache.cache)
+      : (board) => this.evaluate(heroMask | board);
+    
+    const evaluateVillain = evalCache
+      ? (board) => this._getCachedEvaluation(evalCache.villainKey, evalCache.villainHand, board, evalCache.cache)
+      : (board) => this.evaluate(villainMask | board);
+    
+    // Main evaluation loop
+    const yieldInterval = 1000;
+    for (let i = 0; i < iterations; i++) {
+      // Generate board: use pre-computed combo for exhaustive, or deal randomly
+      const board = setup.isExhaustive 
+        ? setup.boardMask | comboArray[i]
+        : this.deal(setup.boardMask, deadMask, setup.numberOfCardsToDeal) | setup.boardMask;
+      
+      // Evaluate both hands
+      const [hEval, hKick] = evaluateHero(board);
+      const [vEval, vKick] = evaluateVillain(board);
+      
+      // Compare and accumulate results
+      const result = this._compareEvaluations(hEval, hKick, vEval, vKick);
+      if (result === 1) win++;
+      else if (result === -1) lose++;
+      else tie++;
+      
+      // Yield control periodically for UI responsiveness
+      if (progressCallback && i > 0 && i % yieldInterval === 0) {
+        const total = totalMatchups * iterations;
+        const current = matchupIndex * iterations + i;
+        progressCallback(current, total, `Matchup ${matchupIndex + 1}/${totalMatchups}: ${i.toLocaleString()}/${iterations.toLocaleString()}`);
+        await new Promise(resolve => setTimeout(resolve, 0));
+      }
+    }
+    
+    return { matchupWin: win, matchupTie: tie, matchupLose: lose };
+  }
+
+  /**
+   * Compares ranges without optimization (evaluates all matchups individually).
+   * @private
+   */
+  async _compareRangeUnoptimized(heroHands, villainHands, setup, progressCallback = null) {
+    let win = 0, tie = 0, lose = 0;
+    const total = setup.validMatchups.length;
+    for (let i = 0; i < total; i++) {
+      const { heroMask, villainMask } = setup.validMatchups[i];
+      const { matchupWin, matchupTie, matchupLose } = await this._evaluateMatchup(heroMask, villainMask, setup, null, progressCallback, i, total);
+      win += matchupWin; tie += matchupTie; lose += matchupLose;
+      if (progressCallback && i % 10 === 0) {
+        progressCallback(i, total, `Evaluating ${i}/${total}`);
+        await new Promise(resolve => setTimeout(resolve, 0));
+      }
+    }
+    if (progressCallback) progressCallback(total, total, 'Complete');
+    return { win, tie, lose };
+  }
+
+  /**
+   * Compares ranges with canonical key caching optimization.
+   * @private
+   */
+  async _compareRangeOptimized(setup, progressCallback = null) {
+    let win = 0, tie = 0, lose = 0;
+    const evalCache = new Map();
+    
+    // Pre-calculate board suit counts once (constant for all matchups)
+    const boardSuitCounts = setup.boardCards.length > 0 
+      ? this._getBoardSuitCounts(setup.boardCards) 
+      : null;
+    
+    // Pre-build lookup map: canonical key pair -> valid matchup
+    // This eliminates the O(n) find() call inside nested loops, reducing complexity
+    // from O(heroCanon × villainCanon × validMatchups) to O(validMatchups + heroCanon × villainCanon)
+    const canonicalToMatchup = new Map();
+    for (const matchup of setup.validMatchups) {
+      const mHKey = this._getCanonicalKey(
+        matchup.heroHand, 
+        setup.boardCards, 
+        setup.numberOfBoardCards, 
+        boardSuitCounts
+      );
+      const mVKey = this._getCanonicalKey(
+        matchup.villainHand, 
+        setup.boardCards, 
+        setup.numberOfBoardCards, 
+        boardSuitCounts
+      );
+      const key = `${mHKey}:${mVKey}`;
+      if (!canonicalToMatchup.has(key)) {
+        canonicalToMatchup.set(key, matchup);
+      }
+    }
+    
+    // Calculate accurate total matchups (excluding invalid pairs with validCount=0)
+    let totalMatchups = 0;
+    for (const [hKey] of setup.hCanon.canonicalMap) {
+      for (const [vKey] of setup.vCanon.canonicalMap) {
+        const key = `${hKey}:${vKey}`;
+        if ((setup.validCounts.get(key) || 0) > 0) {
+          totalMatchups++;
         }
       }
-      return combos;
     }
-    return [];
-  }
-
-  evaluate(hand) {
-    let response = 0n;
-    if (response = this._bitStraightFlush(hand)) {
-      return [response | this.STRAIGHT_FLUSH_SCORE, null];
-    }
-
-    if (response = this._bitQuads(hand)) {
-      let quadsRanksMask = this._getRankMaskFromBitmask(response);
-      let kickers = this._extractKickers(hand, quadsRanksMask, 1);
-      return [(response | this.QUADS_SCORE), kickers];
-    }
-
-    let trips = this._bitTrips(hand) & (0xFFFFFFFFFFFF0n | (1n << 52n));
-    let pairs = this._bitPairs(hand) & (0xFFFFFFFFFFFF0n | (1n << 52n));
-
-    if ((trips && pairs && trips ^ pairs) || this.countBits(trips) > 1) {
-      return [trips | this.FULL_HOUSE_SCORE, this.stripBits(pairs & ~trips, 1)];
-    }
-
-    if (response = this._bitFlush(hand)) {
-      return [response | this.FLUSH_SCORE, null];
-    }
-
-    if (response = this._bitStraight(hand)) {
-      return [response | this.STRAIGHT_SCORE, null];
-    }
-
-    if (response = trips) {
-      let tripsRanksMask = this._getRankMaskFromBitmask(response);
-      let kickers = this._extractKickers(hand, tripsRanksMask, 2);
-      return [(response | this.TRIPS_SCORE), kickers];
-    }
-
-    if (response = pairs) {
-      if (this.countBits(response) > 1) {
-        let pairRanksMask = this._getTwoPairRanksMask(response);
-        let kickers = this._extractKickers(hand, pairRanksMask, 1);
-        return [(response | this.TWO_PAIRS_SCORE), kickers];
-    }
-      let pairRanksMask = this._getRankMaskFromBitmask(response);
-      let kickers = this._extractKickers(hand, pairRanksMask, 3);
-      return [(response | this.PAIR_SCORE), kickers];
-    }
-
-    return [this.stripBits(this.normalize(hand), 5), null];
-  }
-
-  _bitPairs(hand) {
-    let pairs = ( 
-      ((this.BIT_1 & hand) << 1n) & (this.BIT_2 & hand) |
-      ((this.BIT_1 & hand) << 2n) & (this.BIT_3 & hand) |
-      ((this.BIT_1 & hand) << 3n) & (this.BIT_4 & hand) |
-      ((this.BIT_2 & hand) << 1n) & (this.BIT_3 & hand) |
-      ((this.BIT_2 & hand) << 2n) & (this.BIT_4 & hand) |
-      ((this.BIT_3 & hand) << 1n) & (this.BIT_4 & hand));
-    pairs = (pairs >> 1n | pairs >> 2n | pairs >> 3n) & this.BIT_1;
-    return this.stripBits(pairs, 2);
-  }
-
-  _bitTrips(hand) {
-    let a = (((this.BIT_1 & hand) << 1n & (this.BIT_2 & hand)) << 1n & (this.BIT_3 & hand)) >> 2n;
-    let b = (((this.BIT_2 & hand) << 1n & (this.BIT_3 & hand)) << 1n & (this.BIT_4 & hand)) >> 3n;
-    let c = (((this.BIT_1 & hand) << 2n & (this.BIT_3 & hand)) << 1n & (this.BIT_4 & hand)) >> 3n;
-    let d = (((this.BIT_1 & hand) << 1n & (this.BIT_2 & hand)) << 2n & (this.BIT_4 & hand)) >> 3n;
-    return this.stripBits((a | b | c | d) & this.BIT_1, 1);
-  }
-
-  _bitFlush(hand) {
-    let i = 0n;
-    while (i < 4) {
-      if (this.countBits((hand >> 4n) & (this.BIT_1 << i)) >= 5) {
-        return this.stripBits(((hand >> 4n) & (this.BIT_1 << i)) >> i, 5);
+    
+    let matchupIndex = 0;
+    for (const [hKey] of setup.hCanon.canonicalMap) {
+      for (const [vKey] of setup.vCanon.canonicalMap) {
+        const key = `${hKey}:${vKey}`;
+        const validCount = setup.validCounts.get(key) || 0;
+        
+        if (validCount === 0) continue;
+        
+        // O(1) lookup instead of O(n) find() - major performance improvement
+        const validPair = canonicalToMatchup.get(key);
+        if (!validPair) {
+          console.error(`[DIAG] ERROR: No valid pair found for ${hKey}:${vKey} despite validCount=${validCount}`);
+          continue;
+        }
+        
+        const cache = { 
+          heroKey: hKey, 
+          heroHand: validPair.heroHand, 
+          villainKey: vKey, 
+          villainHand: validPair.villainHand, 
+          cache: evalCache 
+        };
+        
+        const { matchupWin, matchupTie, matchupLose } = await this._evaluateMatchup(
+          validPair.heroMask, 
+          validPair.villainMask, 
+          setup, 
+          cache, 
+          progressCallback, 
+          matchupIndex, 
+          totalMatchups
+        );
+        
+        win += matchupWin * validCount;
+        tie += matchupTie * validCount;
+        lose += matchupLose * validCount;
+        
+        matchupIndex++;
+        if (progressCallback && matchupIndex % 10 === 0) {
+          progressCallback(matchupIndex, totalMatchups, `Evaluating ${matchupIndex}`);
+          await new Promise(resolve => setTimeout(resolve, 0));
+        }
       }
-      i++;
     }
-    return 0n;
+    
+    if (progressCallback) progressCallback(matchupIndex, matchupIndex, 'Complete');
+    return { win, tie, lose };
   }
 
-  _bitStraight(hand) {
-    hand = (hand | hand >> 1n | hand >> 2n | hand >> 3n) & this.BIT_1;
-
-    hand = hand & 
-      (hand << 4n) & 
-      (hand << 8n) & 
-      (hand << 12n) & 
-      (hand << 16n);
-
-    return this.stripBits(hand, 1);
+  /**
+   * Gets cached evaluation or evaluates and caches the result.
+   * @private
+   */
+  _getCachedEvaluation(canonicalKey, originalHand, completeBoard, evalCache) {
+    const cacheKey = canonicalKey + completeBoard.toString();
+    if (evalCache.has(cacheKey)) return evalCache.get(cacheKey);
+    const handMask = this.getBitMasked(this._handStringToCards(originalHand));
+    const evaluation = this.evaluate(handMask | completeBoard);
+    evalCache.set(cacheKey, evaluation);
+    return evaluation;
   }
 
-  _bitQuads(hand) {
-    return ((((
-      (hand & this.BIT_1) << 1n &
-      (hand & this.BIT_2)) << 1n &
-      (hand & this.BIT_3)) << 1n &
-      (hand & this.BIT_4))
-      & this.BIT_4) >> 3n;
+  /**
+   * Compares two hand evaluations to determine winner.
+   * @private
+   */
+  _compareEvaluations(heroEval, heroKicker, villainEval, villainKicker) {
+    if (heroEval > villainEval || (heroEval === villainEval && heroKicker > villainKicker)) return 1;
+    if (villainEval > heroEval || (villainEval === heroEval && villainKicker > heroKicker)) return -1;
+    return 0;
   }
 
-  _bitStraightFlush(hand) {
-    hand = hand & 
-      (hand << 4n) & 
-      (hand << 8n) & 
-      (hand << 12n) & 
-      (hand << 16n);
-
-    return this.stripBits(hand, 1);
-  }
-
-  _getBoardSuitCounts(boardCards) {
-    const suitCounts = new Map();
-    for (const card of boardCards) {
-      const suit = card[1];
-      suitCounts.set(suit, (suitCounts.get(suit) || 0) + 1);
-    }
-    return suitCounts;
-  }
-
-  _getCardsToCome(boardCards, numberOfBoardCards) {
-    return numberOfBoardCards - boardCards.length;
-  }
-
-  _suitHasFlushPotential(suit, boardSuitCounts, cardsToCome) {
-    return (boardSuitCounts.get(suit) || 0) + cardsToCome >= 4;
-  }
-
+  /**
+   * Gets canonical key for a hand based on board context (for caching optimization).
+   * @private
+   */
   _getCanonicalKey(hand, boardCards = [], numberOfBoardCards = 5, boardSuitCounts = null) {
     const r1 = hand[0], r2 = hand[2], s1 = hand[1], s2 = hand[3];
     const rankOrder = 'AKQJT98765432';
@@ -515,6 +901,10 @@ class BitVal {
     return (highPot ? high + highSuit : high) + (lowPot ? low + lowSuit : low);
   }
 
+  /**
+   * Flattens hands to canonical keys for caching optimization.
+   * @private
+   */
   _flattenHandsToCanonical(hands, boardCards = [], numberOfBoardCards = 5) {
     const canonicalMap = new Map();
     const canonicalToHand = new Map();
@@ -529,173 +919,91 @@ class BitVal {
     return { canonicalMap, canonicalToHand };
   }
 
-  _generateValidMatchups(heroHands, villainHands, boardCards = []) {
-    const valid = [];
-    const boardMask = boardCards.length > 0 ? this.getBitMasked(boardCards) : 0n;
-    for (const h of heroHands) {
-      const hMask = this.getBitMasked(this._handStringToCards(h));
-      if (boardMask && (hMask & boardMask) !== 0n) continue;
-      for (const v of villainHands) {
-        const vMask = this.getBitMasked(this._handStringToCards(v));
-        if ((vMask & boardMask) !== 0n || (hMask & vMask) !== 0n) continue;
-        valid.push({ heroHand: h, villainHand: v, heroMask: hMask, villainMask: vMask });
-      }
+  /**
+   * Gets board suit counts for flush potential calculation.
+   * @private
+   */
+  _getBoardSuitCounts(boardCards) {
+    const suitCounts = new Map();
+    for (const card of boardCards) {
+      const suit = card[1];
+      suitCounts.set(suit, (suitCounts.get(suit) || 0) + 1);
     }
-    return valid;
+    return suitCounts;
   }
 
-  _calculateValidCounts(validMatchups, hCanon, vCanon, boardCards, numberOfBoardCards) {
-    const counts = new Map();
-    const boardSuitCounts = boardCards.length > 0 ? this._getBoardSuitCounts(boardCards) : null;
-    for (const { heroHand, villainHand } of validMatchups) {
-      const hKey = this._getCanonicalKey(heroHand, boardCards, numberOfBoardCards, boardSuitCounts);
-      const vKey = this._getCanonicalKey(villainHand, boardCards, numberOfBoardCards, boardSuitCounts);
-      const key = `${hKey}:${vKey}`;
-      counts.set(key, (counts.get(key) || 0) + 1);
-    }
-    return counts;
+  /**
+   * Gets number of cards to come.
+   * @private
+   */
+  _getCardsToCome(boardCards, numberOfBoardCards) {
+    return numberOfBoardCards - boardCards.length;
   }
 
-  _compareRangeSetup(heroHands, villainHands, boardCards, deadCards, numberOfBoardCards, iterations, optimize) {
-    const validMatchups = this._generateValidMatchups(heroHands, villainHands, boardCards);
-    const hCanon = optimize ? this._flattenHandsToCanonical(heroHands, boardCards, numberOfBoardCards) : null;
-    const vCanon = optimize ? this._flattenHandsToCanonical(villainHands, boardCards, numberOfBoardCards) : null;
-    const validCounts = optimize ? this._calculateValidCounts(validMatchups, hCanon, vCanon, boardCards, numberOfBoardCards) : null;
-    const boardMask = this.getBitMasked(boardCards);
-    const allDeadCards = [...boardCards, ...deadCards];
-    const deadCardsMask = this.getBitMasked(allDeadCards);
-    const numberOfCardsToDeal = numberOfBoardCards - boardCards.length;
-    const availableCards = 52 - new Set(allDeadCards).size;
-    const exhaustiveCombinations = numberOfCardsToDeal > 0 && numberOfCardsToDeal <= 2 ? this.combinations(availableCards, numberOfCardsToDeal) : Infinity;
-    iterations = Math.min(iterations, exhaustiveCombinations);
-    const isExhaustive = iterations === exhaustiveCombinations && numberOfCardsToDeal > 0 && numberOfCardsToDeal <= 2 && exhaustiveCombinations < Infinity;
-    const comboArray = isExhaustive ? this._getCombinations(this._getAvailableCardMasksByLookUp(deadCardsMask), numberOfCardsToDeal) : null;
-    return { hCanon, vCanon, boardMask, deadCardsMask, iterations, isExhaustive, comboArray, numberOfCardsToDeal, validMatchups, validCounts, boardCards, numberOfBoardCards };
+  /**
+   * Checks if a suit has flush potential given board and cards to come.
+   * @private
+   */
+  _suitHasFlushPotential(suit, boardSuitCounts, cardsToCome) {
+    return (boardSuitCounts.get(suit) || 0) + cardsToCome >= 4;
   }
 
-  _getCachedEvaluation(canonicalKey, originalHand, completeBoard, evalCache) {
-    const cacheKey = canonicalKey + completeBoard.toString();
-    if (evalCache.has(cacheKey)) return evalCache.get(cacheKey);
-    const handMask = this.getBitMasked(this._handStringToCards(originalHand));
-    const evaluation = this.evaluate(handMask | completeBoard);
-    evalCache.set(cacheKey, evaluation);
-    return evaluation;
-  }
+  // ============================================
+  // PRIVATE - Utility Helpers
+  // ============================================
 
-  _compareEvaluations(heroEval, heroKicker, villainEval, villainKicker) {
-    if (heroEval > villainEval || (heroEval === villainEval && heroKicker > villainKicker)) return 1;
-    if (villainEval > heroEval || (villainEval === heroEval && villainKicker > heroKicker)) return -1;
-    return 0;
-  }
-
-  async _evaluateMatchup(heroMask, villainMask, setup, evalCache = null, progressCallback = null, matchupIndex = 0, totalMatchups = 1) {
-    let win = 0, tie = 0, lose = 0;
-    const deadMask = heroMask | villainMask | setup.deadCardsMask;
-    if (!setup.isExhaustive) this.xorShift = new XorShift32();
-    
-    // For exhaustive, generate comboArray excluding THIS matchup's hero/villain cards
-    let comboArray = null;
-    let iterations = setup.iterations;
-    if (setup.isExhaustive) {
-      const matchupDeadMask = heroMask | villainMask | setup.deadCardsMask;
-      const availableMasks = this._getAvailableCardMasksByLookUp(matchupDeadMask);
-      comboArray = this._getCombinations(availableMasks, setup.numberOfCardsToDeal);
-      iterations = comboArray.length;
-    }
-    
-    const yieldInterval = 1000;
-    for (let i = 0; i < iterations; i++) {
-      const board = setup.isExhaustive && comboArray ? setup.boardMask | comboArray[i] : this.deal(setup.boardMask, deadMask, setup.numberOfCardsToDeal) | setup.boardMask;
-      const [hEval, hKick] = evalCache ? this._getCachedEvaluation(evalCache.heroKey, evalCache.heroHand, board, evalCache.cache) : this.evaluate(heroMask | board);
-      const [vEval, vKick] = evalCache ? this._getCachedEvaluation(evalCache.villainKey, evalCache.villainHand, board, evalCache.cache) : this.evaluate(villainMask | board);
-      const result = this._compareEvaluations(hEval, hKick, vEval, vKick);
-      if (result === 1) win++; else if (result === -1) lose++; else tie++;
-      if (progressCallback && i > 0 && i % yieldInterval === 0) {
-        const total = totalMatchups * iterations;
-        const current = matchupIndex * iterations + i;
-        progressCallback(current, total, `Matchup ${matchupIndex + 1}/${totalMatchups}: ${i.toLocaleString()}/${iterations.toLocaleString()}`);
-        await new Promise(resolve => setTimeout(resolve, 0));
-      }
-    }
-    return { matchupWin: win, matchupTie: tie, matchupLose: lose };
-  }
-
-  async _compareRangeUnoptimized(heroHands, villainHands, setup, progressCallback = null) {
-    let win = 0, tie = 0, lose = 0;
-    const total = setup.validMatchups.length;
-    for (let i = 0; i < total; i++) {
-      const { heroMask, villainMask } = setup.validMatchups[i];
-      const { matchupWin, matchupTie, matchupLose } = await this._evaluateMatchup(heroMask, villainMask, setup, null, progressCallback, i, total);
-      win += matchupWin; tie += matchupTie; lose += matchupLose;
-      if (progressCallback && i % 10 === 0) {
-        progressCallback(i, total, `Evaluating ${i}/${total}`);
-        await new Promise(resolve => setTimeout(resolve, 0));
-      }
-    }
-    if (progressCallback) progressCallback(total, total, 'Complete');
-    return { win, tie, lose };
-  }
-
-  async _compareRangeOptimized(setup, progressCallback = null) {
-    let win = 0, tie = 0, lose = 0;
-    const evalCache = new Map();
-    const totalMatchups = setup.hCanon.canonicalMap.size * setup.vCanon.canonicalMap.size;
-    let matchupIndex = 0;
-    for (const [hKey, hMult] of setup.hCanon.canonicalMap) {
-      const hHand = setup.hCanon.canonicalToHand.get(hKey);
-      const hMask = this.getBitMasked(this._handStringToCards(hHand));
-      for (const [vKey, vMult] of setup.vCanon.canonicalMap) {
-        const vHand = setup.vCanon.canonicalToHand.get(vKey);
-        const vMask = this.getBitMasked(this._handStringToCards(vHand));
-        const key = `${hKey}:${vKey}`;
-        const validCount = setup.validCounts.get(key) || 0;
-        if (validCount === 0) {
-          matchupIndex++;
-          continue;
-        }
-        // ALWAYS find a valid pair from validMatchups to ensure no board overlap
-        const boardSuitCounts = setup.boardCards.length > 0 ? this._getBoardSuitCounts(setup.boardCards) : null;
-        const validPair = setup.validMatchups.find(m => {
-          const mHKey = this._getCanonicalKey(m.heroHand, setup.boardCards, setup.numberOfBoardCards, boardSuitCounts);
-          const mVKey = this._getCanonicalKey(m.villainHand, setup.boardCards, setup.numberOfBoardCards, boardSuitCounts);
-          return mHKey === hKey && mVKey === vKey;
-        });
-        if (!validPair) {
-          console.error(`[DIAG] ERROR: No valid pair found for ${hKey}:${vKey} despite validCount=${validCount}`);
-          matchupIndex++;
-          continue;
-        }
-        const evalHand = validPair.heroHand;
-        const evalVillain = validPair.villainHand;
-        const evalHMask = validPair.heroMask;
-        const evalVMask = validPair.villainMask;
-        const cache = { heroKey: hKey, heroHand: evalHand, villainKey: vKey, villainHand: evalVillain, cache: evalCache };
-        const { matchupWin, matchupTie, matchupLose } = await this._evaluateMatchup(evalHMask, evalVMask, setup, cache, progressCallback, matchupIndex, totalMatchups);
-        win += matchupWin * validCount; tie += matchupTie * validCount; lose += matchupLose * validCount;
-        matchupIndex++;
-        if (progressCallback && matchupIndex % 10 === 0) {
-          progressCallback(matchupIndex, totalMatchups, `Evaluating ${matchupIndex}`);
-          await new Promise(resolve => setTimeout(resolve, 0));
-        }
-      }
-    }
-    if (progressCallback) progressCallback(matchupIndex, matchupIndex, 'Complete');
-    return { win, tie, lose };
-  }
-
+  /**
+   * Converts a hand string to an array of card strings.
+   * @private
+   */
   _handStringToCards(hand) {
     return [hand.substring(0, 2), hand.substring(2, 4)];
   }
 
+  /**
+   * Gets available card masks by lookup, excluding dead cards.
+   * @private
+   */
+  _getAvailableCardMasksByLookUp(deadCards) {
+    let masks = [];
+    let deck = ~deadCards;
+
+    for (const card in this.CARD_MASKS) {
+      const cardMask = this.CARD_MASKS[card];
+      if ((cardMask & deck) === cardMask) {
+        masks.push(cardMask);
+      }
+    }
+
+    return masks;
+  }
+
+  /**
+   * Gets combinations of available card masks.
+   * @private
+   */
+  _getCombinations(availableMasks, k) {
+    if (k === 1) return availableMasks;
+    if (k === 2) {
+      let combos = [];
+      for (let i = 0; i < availableMasks.length; i++) {
+        for (let j = i + 1; j < availableMasks.length; j++) {
+          combos.push(availableMasks[i] | availableMasks[j]);
+        }
+      }
+      return combos;
+    }
+    return [];
+  }
+
+  /**
+   * Simulates a single matchup (legacy method, uses simulate internally).
+   * @private
+   */
   _simulateMatchup(heroHand, villainHand, board, deadCards, numberOfBoardCards, iterations) {
     const heroCards = this._handStringToCards(heroHand);
     const villainCards = this._handStringToCards(villainHand);
     return this.simulate(iterations, numberOfBoardCards, heroCards, villainCards, board, deadCards);
-  }
-
-  async compareRange(heroHands, villainHands, boardCards = [], deadCards = [], numberOfBoardCards = 5, iterations = 10000, optimize = true, progressCallback = null) {
-    const setup = this._compareRangeSetup(heroHands, villainHands, boardCards, deadCards, numberOfBoardCards, iterations, optimize);
-    return optimize ? await this._compareRangeOptimized(setup, progressCallback) : await this._compareRangeUnoptimized(heroHands, villainHands, setup, progressCallback);
   }
 }
 
