@@ -13,6 +13,46 @@ class XorShift32 {
   }
 }
 
+/**
+ * Fastest auto-clearing cache with minimal overhead.
+ * Uses bitwise counter check to avoid expensive modulo operations.
+ */
+class FastestAutoClearingCache {
+  constructor(maxSize = 16000000) {
+    this.maxSize = maxSize;
+    this.clearThreshold = Math.floor(maxSize * 0.95); // Clear at 95% capacity
+    this.cache = new Map();
+    this.counter = 0;
+  }
+  
+  has(key) {
+    return this.cache.has(key); // No overhead on hot path
+  }
+  
+  get(key) {
+    return this.cache.get(key); // No overhead on hot path
+  }
+  
+  set(key, value) {
+    // Bitwise check is faster than modulo - check every ~1 million operations
+    // 0xFFFFF = 1,048,576 (2^20)
+    if ((++this.counter & 0xFFFFF) === 0) {
+      if (this.cache.size >= this.clearThreshold) {
+        this.cache.clear();
+      }
+    }
+    this.cache.set(key, value);
+  }
+  
+  clear() {
+    this.cache.clear();
+  }
+  
+  get size() {
+    return this.cache.size;
+  }
+}
+
 class BitVal {
   constructor() {
     // Suit constants
@@ -326,11 +366,12 @@ class BitVal {
    * @param {Number} iterations - Number of simulations per matchup (default: 10000)
    * @param {Boolean} optimize - Use canonical key caching (default: true)
    * @param {Function} progressCallback - Optional progress callback (current, total, message)
+   * @param {Number} progressInterval - Update progress every N matchups (default: 100)
    * @returns {Promise<Object>} { win, tie, lose } - Results object
    */
-  async compareRange(heroHands, villainHands, boardCards = [], deadCards = [], numberOfBoardCards = 5, iterations = 10000, optimize = true, progressCallback = null) {
+  async compareRange(heroHands, villainHands, boardCards = [], deadCards = [], numberOfBoardCards = 5, iterations = 10000, optimize = true, progressCallback = null, progressInterval = 100) {
     const setup = this._compareRangeSetup(heroHands, villainHands, boardCards, deadCards, numberOfBoardCards, iterations, optimize);
-    return optimize ? await this._compareRangeOptimized(setup, progressCallback) : await this._compareRangeUnoptimized(heroHands, villainHands, setup, progressCallback);
+    return optimize ? await this._compareRangeOptimized(setup, progressCallback, progressInterval) : await this._compareRangeUnoptimized(heroHands, villainHands, setup, progressCallback, progressInterval);
   }
 
   // ============================================
@@ -779,7 +820,7 @@ class BitVal {
    * Compares ranges without optimization (evaluates all matchups individually).
    * @private
    */
-  async _compareRangeUnoptimized(heroHands, villainHands, setup, progressCallback = null) {
+  async _compareRangeUnoptimized(heroHands, villainHands, setup, progressCallback = null, progressInterval = 100) {
     let win = 0, tie = 0, lose = 0;
     const total = setup.validMatchups.length;
     let lastProgressTime = 0;
@@ -790,7 +831,7 @@ class BitVal {
       const { matchupWin, matchupTie, matchupLose } = await this._evaluateMatchup(heroMask, villainMask, setup, null, progressCallback, i, total);
       win += matchupWin; tie += matchupTie; lose += matchupLose;
       
-      if (progressCallback && i % 10 === 0) {
+      if (progressCallback && i % progressInterval === 0) {
         const now = Date.now();
         const shouldUpdateProgress = now - lastProgressTime >= progressUpdateInterval;
         
@@ -830,9 +871,9 @@ class BitVal {
    * Compares ranges with canonical key caching optimization.
    * @private
    */
-  async _compareRangeOptimized(setup, progressCallback = null) {
+  async _compareRangeOptimized(setup, progressCallback = null, progressInterval = 100) {
     let win = 0, tie = 0, lose = 0;
-    const evalCache = new Map();
+    const evalCache = new FastestAutoClearingCache(16000000);
     let lastProgressTime = 0;
     const progressUpdateInterval = 100; // Update progress at most every 100ms
     
@@ -913,7 +954,7 @@ class BitVal {
         lose += matchupLose * validCount;
         
         matchupIndex++;
-        if (progressCallback && matchupIndex % 10 === 0) {
+        if (progressCallback && matchupIndex % progressInterval === 0) {
           const now = Date.now();
           const shouldUpdateProgress = now - lastProgressTime >= progressUpdateInterval;
           
