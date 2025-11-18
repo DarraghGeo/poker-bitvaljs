@@ -997,9 +997,35 @@ class BitVal {
       if (s2Pot) return high + low + s2;
       return high + low;
     }
+    
+    // Postflop non-pairs: use 'x' notation to remove ambiguity
+    const isSuited = s1 === s2;
     const highPot = this._suitHasFlushPotential(highSuit, boardSuitCounts, cardsToCome);
     const lowPot = this._suitHasFlushPotential(lowSuit, boardSuitCounts, cardsToCome);
-    return (highPot ? high + highSuit : high) + (lowPot ? low + lowSuit : low);
+    
+    if (isSuited) {
+      // Both cards same suit
+      if (highPot) {
+        return high + highSuit + low + lowSuit; // e.g., "AsKs" (both spades)
+      } else {
+        return high + low + 's'; // e.g., "AKs" (suited, no flush potential)
+      }
+    } else {
+      // Offsuit hands
+      if (highPot && !lowPot) {
+        // Only high has flush potential
+        return high + highSuit + low + 'x'; // e.g., "AsKx" (A is spade, K is not)
+      } else if (!highPot && lowPot) {
+        // Only low has flush potential
+        return high + 'x' + low + lowSuit; // e.g., "AxKs" (K is spade, A is not)
+      } else if (highPot && lowPot) {
+        // Both have flush potential (different suits)
+        return high + highSuit + low + lowSuit; // e.g., "AsKh" (both suits specified, no x)
+      } else {
+        // Neither has flush potential
+        return high + low + 'o'; // e.g., "AKo"
+      }
+    }
   }
 
   /**
