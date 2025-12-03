@@ -19,10 +19,11 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://github.com/DarraghGeo/poker-bitvaljs.git"
+    "url": "git+https://github.com/DarraghGeo/poker-bitvaljs.git"
   },
   "files": [
     "bitval.js",
+    "bitval-worker.js",
     "README.md"
   ]
 }

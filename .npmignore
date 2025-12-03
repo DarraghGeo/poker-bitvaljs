@@ -1,5 +1,6 @@
-# Exclude everything except bitval.js and README.md
+# Exclude everything except bitval.js, bitval-worker.js and README.md
 *
 !bitval.js
+!bitval-worker.js
 !README.md
 
