@@ -1,6 +1,6 @@
 // Web Worker for parallel matchup evaluation
 // Loads bitval.js to access BitVal class and dependencies
-importScripts('bitval.js');
+importScripts('./bitval.js');
 
 /**
  * Deserializes setup data from main thread (converts string BigInts back to BigInt)

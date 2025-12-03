@@ -1159,7 +1159,7 @@ class BitVal {
     }, progressUpdateInterval) : null;
     
     for (let i = 0; i < batches.length; i++) {
-      const worker = new Worker('bitval-worker.js');
+      const worker = new Worker('./bitval-worker.js');
       workers.push(worker);
       
       const promise = new Promise((resolve, reject) => {
