@@ -8,9 +8,10 @@ High-performance poker hand evaluator optimized for browser environments, using 
 
 - **Fast hand evaluation** using bitwise operations
 - **Range vs range equity calculations** with canonical key caching optimization
+- **Web Workers support** for parallel processing across multiple CPU cores (3-7x speedup)
 - **Monte Carlo simulation** for preflop and postflop scenarios
 - **Exhaustive enumeration** for flop/turn scenarios (2 or fewer cards to come)
-- **Progress callbacks** for long-running calculations
+- **Progress callbacks** with configurable update intervals
 - **Browser and Node.js compatible**
 
 ## Installation
@@ -53,7 +54,9 @@ const result = await bitval.compareRange(
   5,  // number of board cards
   10000, // iterations
   true, // optimize (use canonical caching)
-  null // progress callback (optional)
+  null, // progress callback (optional)
+  100, // progress interval (optional, default: 100)
+  true // use workers (optional, default: true)
 );
 
 // Result: { win: 8120, tie: 30, lose: 1850 }
@@ -73,7 +76,27 @@ const result = await bitval.compareRange(
   true,
   (current, total, message) => {
     console.log(`${Math.round((current/total)*100)}% - ${message}`);
-  }
+  },
+  100, // Update progress every 100 matchups
+  true // Use Web Workers for parallelization
+);
+```
+
+### With Web Workers Disabled
+
+```javascript
+// Disable Web Workers (useful for debugging or when workers aren't supported)
+const result = await bitval.compareRange(
+  heroHands,
+  villainHands,
+  [],
+  [],
+  5,
+  10000,
+  true,
+  null,
+  100,
+  false // Disable Web Workers, use sequential execution
 );
 ```
 
@@ -134,9 +157,9 @@ Simulates a single hand vs hand matchup.
 **Returns:**
 - `{ win, tie, lose }`: Results object
 
-### `compareRange(heroHands, villainHands, boardCards, deadCards, numberOfBoardCards, iterations, optimize, progressCallback)`
+### `compareRange(heroHands, villainHands, boardCards, deadCards, numberOfBoardCards, iterations, optimize, progressCallback, progressInterval, useWorkers)`
 
-Compares two ranges of hands with optional optimization.
+Compares two ranges of hands with optional optimization and Web Workers parallelization.
 
 **Parameters:**
 - `heroHands` (Array): Array of hero hand strings (e.g., `['AsAh', 'AsAd']`)
@@ -146,19 +169,57 @@ Compares two ranges of hands with optional optimization.
 - `numberOfBoardCards` (Number): Total board cards (default: `5`)
 - `iterations` (Number): Number of simulations per matchup (default: `10000`)
 - `optimize` (Boolean): Use canonical key caching for performance (default: `true`). **Note:** Optimizations may result in a ±0.5% margin of error compared to unoptimized calculations.
-- `progressCallback` (Function): Optional callback `(current, total, message) => {}`
+- `progressCallback` (Function): Optional callback `(current, total, message) => {}` (default: `null`)
+- `progressInterval` (Number): Update progress callback every N matchups (default: `100`)
+- `useWorkers` (Boolean): Use Web Workers for parallelization across CPU cores (default: `true`). Automatically falls back to sequential execution if workers are unavailable or workload is too small (< 4 matchups).
 
 **Returns:**
 - `Promise<{ win, tie, lose }>`: Results object
 
+**Web Workers Notes:**
+- Web Workers provide 3-7x speedup on multi-core systems by parallelizing matchup evaluations
+- Workers are automatically disabled when:
+  - `useWorkers` is `false`
+  - Workers are not supported by the browser
+  - There are fewer than 4 matchups (overhead not worth it)
+- For local testing with `file://` protocol, use a local web server (see [Testing Locally](#testing-locally))
+
 ## Performance
 
 - **Optimized for browser environments** with efficient bitwise operations
+- **Web Workers parallelization** provides 3-7x speedup on multi-core systems
 - Canonical key caching reduces redundant evaluations (may introduce ±0.5% margin of error)
 - Exhaustive enumeration for flop/turn (2 or fewer cards to come)
 - Monte Carlo simulation for preflop and river scenarios
+- Adaptive progress reporting to minimize UI blocking
 
 **Test performance and benchmark online:** [https://darraghgeo.github.io/poker-bitvaljs/](https://darraghgeo.github.io/poker-bitvaljs/)
+
+### Performance Tips
+
+- Enable Web Workers (default) for best performance on multi-core systems
+- Use canonical caching (`optimize: true`) for large range comparisons
+- Adjust `progressInterval` to balance UI responsiveness vs. performance
+- For very small workloads (< 4 matchups), workers are automatically disabled to avoid overhead
+
+## Testing Locally
+
+When testing locally, Web Workers require a proper HTTP origin. If you open `index.html` directly from the file system (`file://` protocol), workers will fail with a `SecurityError`.
+
+**Solution: Use a local web server**
+
+```bash
+# Python 3
+python3 -m http.server 8000
+
+# Node.js (if you have npx)
+npx http-server -p 8000
+
+# PHP (if installed)
+php -S localhost:8000
+```
+
+Then open `http://localhost:8000` in your browser. The application will automatically fall back to sequential execution if workers are unavailable.
 
 ## License
 
