@@ -367,11 +367,12 @@ class BitVal {
    * @param {Boolean} optimize - Use canonical key caching (default: true)
    * @param {Function} progressCallback - Optional progress callback (current, total, message)
    * @param {Number} progressInterval - Update progress every N matchups (default: 100)
+   * @param {Boolean} useWorkers - Use Web Workers for parallelization (default: true)
    * @returns {Promise<Object>} { win, tie, lose } - Results object
    */
-  async compareRange(heroHands, villainHands, boardCards = [], deadCards = [], numberOfBoardCards = 5, iterations = 10000, optimize = true, progressCallback = null, progressInterval = 100) {
+  async compareRange(heroHands, villainHands, boardCards = [], deadCards = [], numberOfBoardCards = 5, iterations = 10000, optimize = true, progressCallback = null, progressInterval = 100, useWorkers = true) {
     const setup = this._compareRangeSetup(heroHands, villainHands, boardCards, deadCards, numberOfBoardCards, iterations, optimize);
-    return optimize ? await this._compareRangeOptimized(setup, progressCallback, progressInterval) : await this._compareRangeUnoptimized(heroHands, villainHands, setup, progressCallback, progressInterval);
+    return optimize ? await this._compareRangeOptimized(setup, progressCallback, progressInterval, useWorkers) : await this._compareRangeUnoptimized(heroHands, villainHands, setup, progressCallback, progressInterval);
   }
 
   // ============================================
@@ -721,6 +722,63 @@ class BitVal {
   }
 
   /**
+   * Serializes setup object for worker communication (converts BigInts to strings).
+   * Note: Maps and complex objects are not sent to workers - workers only need basic setup data.
+   * @private
+   */
+  _serializeSetup(setup) {
+    return {
+      boardMask: setup.boardMask.toString(),
+      deadCardsMask: setup.deadCardsMask.toString(),
+      comboArray: setup.comboArray ? setup.comboArray.map(m => m.toString()) : null,
+      boardCards: setup.boardCards,
+      numberOfBoardCards: setup.numberOfBoardCards,
+      iterations: setup.iterations,
+      isExhaustive: setup.isExhaustive,
+      numberOfCardsToDeal: setup.numberOfCardsToDeal
+      // Note: hCanon, vCanon, validMatchups, validCounts are not needed in workers
+      // as matchups are pre-serialized and sent separately
+    };
+  }
+
+  /**
+   * Deserializes setup data from worker (converts string BigInts back to BigInt).
+   * @private
+   */
+  _deserializeSetup(setupData) {
+    return {
+      ...setupData,
+      boardMask: BigInt(setupData.boardMask),
+      deadCardsMask: BigInt(setupData.deadCardsMask),
+      comboArray: setupData.comboArray ? setupData.comboArray.map(s => BigInt(s)) : null
+    };
+  }
+
+  /**
+   * Serializes matchup data for worker communication (converts BigInt masks to strings).
+   * @private
+   */
+  _serializeMatchup(matchup) {
+    return {
+      ...matchup,
+      heroMask: matchup.heroMask.toString(),
+      villainMask: matchup.villainMask.toString()
+    };
+  }
+
+  /**
+   * Deserializes matchup data from worker (converts string BigInts back to BigInt).
+   * @private
+   */
+  _deserializeMatchup(matchupData) {
+    return {
+      ...matchupData,
+      heroMask: BigInt(matchupData.heroMask),
+      villainMask: BigInt(matchupData.villainMask)
+    };
+  }
+
+  /**
    * Evaluates a single matchup with optional caching.
    * Optimized for browser performance with adaptive yielding and inlined hot loop.
    * @private
@@ -868,10 +926,10 @@ class BitVal {
   }
 
   /**
-   * Compares ranges with canonical key caching optimization.
+   * Compares ranges with canonical key caching optimization (sequential version).
    * @private
    */
-  async _compareRangeOptimized(setup, progressCallback = null, progressInterval = 100) {
+  async _compareRangeOptimizedSequential(setup, progressCallback = null, progressInterval = 100) {
     let win = 0, tie = 0, lose = 0;
     const evalCache = new FastestAutoClearingCache(16000000);
     let lastProgressTime = 0;
@@ -989,6 +1047,182 @@ class BitVal {
     }
     
     if (progressCallback) progressCallback(matchupIndex, matchupIndex, 'Complete');
+    return { win, tie, lose };
+  }
+
+  /**
+   * Compares ranges with canonical key caching optimization.
+   * Supports Web Workers for parallelization when enabled.
+   * @private
+   */
+  async _compareRangeOptimized(setup, progressCallback = null, progressInterval = 100, useWorkers = true) {
+    // Pre-calculate board suit counts once (constant for all matchups)
+    const boardSuitCounts = setup.boardCards.length > 0 
+      ? this._getBoardSuitCounts(setup.boardCards) 
+      : null;
+    
+    // Pre-build lookup map: canonical key pair -> valid matchup
+    const canonicalToMatchup = new Map();
+    for (const matchup of setup.validMatchups) {
+      const mHKey = this._getCanonicalKey(
+        matchup.heroHand, 
+        setup.boardCards, 
+        setup.numberOfBoardCards, 
+        boardSuitCounts
+      );
+      const mVKey = this._getCanonicalKey(
+        matchup.villainHand, 
+        setup.boardCards, 
+        setup.numberOfBoardCards, 
+        boardSuitCounts
+      );
+      const key = `${mHKey}:${mVKey}`;
+      if (!canonicalToMatchup.has(key)) {
+        canonicalToMatchup.set(key, matchup);
+      }
+    }
+    
+    // Calculate accurate total matchups (excluding invalid pairs with validCount=0)
+    let totalMatchups = 0;
+    for (const [hKey] of setup.hCanon.canonicalMap) {
+      for (const [vKey] of setup.vCanon.canonicalMap) {
+        const key = `${hKey}:${vKey}`;
+        if ((setup.validCounts.get(key) || 0) > 0) {
+          totalMatchups++;
+        }
+      }
+    }
+    
+    // Collect all matchups to evaluate
+    const matchupsToEvaluate = [];
+    for (const [hKey] of setup.hCanon.canonicalMap) {
+      for (const [vKey] of setup.vCanon.canonicalMap) {
+        const key = `${hKey}:${vKey}`;
+        const validCount = setup.validCounts.get(key) || 0;
+        
+        if (validCount === 0) continue;
+        
+        const validPair = canonicalToMatchup.get(key);
+        if (!validPair) {
+          console.error(`[DIAG] ERROR: No valid pair found for ${hKey}:${vKey} despite validCount=${validCount}`);
+          continue;
+        }
+        
+        matchupsToEvaluate.push({
+          key,
+          validCount,
+          heroKey: hKey,
+          heroHand: validPair.heroHand,
+          heroMask: validPair.heroMask,
+          villainKey: vKey,
+          villainHand: validPair.villainHand,
+          villainMask: validPair.villainMask
+        });
+      }
+    }
+    
+    // Check if workers should be used
+    const shouldUseWorkers = useWorkers && 
+                             typeof Worker !== 'undefined' && 
+                             matchupsToEvaluate.length >= 4;
+    
+    if (!shouldUseWorkers) {
+      // Fallback to sequential execution
+      return await this._compareRangeOptimizedSequential(setup, progressCallback, progressInterval);
+    }
+    
+    // Use Web Workers for parallelization
+    const numWorkers = Math.min(navigator.hardwareConcurrency || 4, matchupsToEvaluate.length);
+    const batchSize = Math.ceil(matchupsToEvaluate.length / numWorkers);
+    const batches = [];
+    for (let i = 0; i < matchupsToEvaluate.length; i += batchSize) {
+      batches.push(matchupsToEvaluate.slice(i, i + batchSize));
+    }
+    
+    // Serialize setup for workers
+    const serializedSetup = this._serializeSetup(setup);
+    
+    // Create workers and distribute work
+    const workers = [];
+    const promises = [];
+    let completedMatchups = 0;
+    
+    // Progress tracking
+    let lastProgressTime = 0;
+    const progressUpdateInterval = 100;
+    const progressIntervalId = progressCallback ? setInterval(() => {
+      const now = Date.now();
+      if (now - lastProgressTime >= progressUpdateInterval) {
+        progressCallback(completedMatchups, totalMatchups, `Evaluating with ${numWorkers} workers: ${completedMatchups}/${totalMatchups}`);
+        lastProgressTime = now;
+      }
+    }, progressUpdateInterval) : null;
+    
+    for (let i = 0; i < batches.length; i++) {
+      const worker = new Worker('bitval-worker.js');
+      workers.push(worker);
+      
+      const promise = new Promise((resolve, reject) => {
+        worker.onmessage = (e) => {
+          if (e.data.success) {
+            completedMatchups += e.data.results.length;
+            resolve(e.data.results);
+          } else {
+            reject(new Error(e.data.error || 'Worker error'));
+          }
+          worker.terminate();
+        };
+        worker.onerror = (error) => {
+          reject(error);
+          worker.terminate();
+        };
+        
+        // Serialize matchups for this batch
+        const serializedBatch = batches[i].map(m => this._serializeMatchup(m));
+        
+        worker.postMessage({
+          matchups: serializedBatch,
+          setupData: serializedSetup,
+          workerId: i
+        });
+      });
+      
+      promises.push(promise);
+    }
+    
+    // Wait for all workers and aggregate results
+    let win = 0, tie = 0, lose = 0;
+    try {
+      const allResults = await Promise.all(promises);
+      
+      for (const batchResults of allResults) {
+        for (const result of batchResults) {
+          win += result.matchupWin * result.validCount;
+          tie += result.matchupTie * result.validCount;
+          lose += result.matchupLose * result.validCount;
+        }
+      }
+    } finally {
+      // Clean up progress interval
+      if (progressIntervalId) {
+        clearInterval(progressIntervalId);
+      }
+      
+      // Ensure all workers are terminated
+      workers.forEach(worker => {
+        try {
+          worker.terminate();
+        } catch (e) {
+          // Ignore termination errors
+        }
+      });
+      
+      // Final progress update
+      if (progressCallback) {
+        progressCallback(totalMatchups, totalMatchups, 'Complete');
+      }
+    }
+    
     return { win, tie, lose };
   }
 
