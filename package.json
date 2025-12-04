@@ -1,6 +1,6 @@
 {
   "name": "poker-bitvaljs",
-  "version": "1.1.1",
+  "version": "1.1.2",
   "description": "High-performance poker hand evaluator optimized for browser environments, using bitwise operations for rapid poker hand analysis and equity calculations.",
   "main": "bitval.js",
   "scripts": {
