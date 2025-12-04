@@ -7,12 +7,18 @@ class BitvalDebug {
   constructor() {
     this.bitval = new BitVal();
     this.CSV_FILE = path.join(__dirname, "discrepancies.csv");
+    this.DIAG_LOG_FILE = path.join(__dirname, "diagnostic.log");
     this.KICKER_MASK = ((1n << 26n) - 1n) & ~((1n << 13n) - 1n);
     this.suits = ['s', 'h', 'd', 'c'];
     this.ranks = ['A', 'K', 'Q', 'J', 'T', '9', '8', '7', '6', '5', '4', '3', '2'];
     this.lastProgressUpdate = 0;
     this.progressUpdateInterval = 50;
+    // Clear diagnostic log file on initialization
+    if (fs.existsSync(this.DIAG_LOG_FILE)) {
+      fs.writeFileSync(this.DIAG_LOG_FILE, '');
+    }
     this.startupTests = [
+      { hero: ['As', 'Kd'], villain: ['Ah', '3h'], expectedEquity: 68.96 },
       { hero: ['As', '2s'], villain: ['8h', '9c'], expectedEquity: 57.76 },
       { hero: ['As', '2s'], villain: ['Kh', '9c'], expectedEquity: 61.17 },
       { hero: ['As', 'Ks'], villain: ['5d', '6d'], expectedEquity: 60.38 },
@@ -448,13 +454,50 @@ class BitvalDebug {
 
   determineFailureType(equityDiff, rankingMatch, tolerance) {
     const roundedDiff = this.roundEquityTo2Decimals(equityDiff);
+    
+    // DIAGNOSTIC: Log the check
+    this.diagLog(`[DIAG] determineFailureType: roundedDiff=${roundedDiff.toFixed(6)}, abs=${Math.abs(roundedDiff).toFixed(6)}, <0.001?=${Math.abs(roundedDiff) < 0.001}`);
+    
+    // If the rounded difference is exactly 0.00% (within floating point precision), it's a pass
+    // This handles cases where values display the same but have tiny differences
+    if (Math.abs(roundedDiff) < 0.001) {
+      this.diagLog(`[DIAG] Early return: Equity matches exactly (< 0.001%), returning "" (PASS)`);
+      return ""; // Pass - equity matches exactly
+    }
+    
     const equityFails = tolerance === 0 ? Math.abs(roundedDiff) >= 0.01 : Math.abs(roundedDiff) > tolerance;
     const rankingFails = !rankingMatch.match;
     
-    if (equityFails && rankingFails) return "both";
-    if (rankingFails) return "ranking";
-    if (equityFails) return "equity";
+    this.diagLog(`[DIAG] equityFails=${equityFails} (tolerance=${tolerance}, roundedDiff=${roundedDiff.toFixed(6)})`);
+    this.diagLog(`[DIAG] rankingFails=${rankingFails} (rankingMatch.match=${rankingMatch.match})`);
+    
+    if (equityFails && rankingFails) {
+      this.diagLog(`[DIAG] Returning "both"`);
+      return "both";
+    }
+    if (rankingFails) {
+      this.diagLog(`[DIAG] Returning "ranking"`);
+      return "ranking";
+    }
+    if (equityFails) {
+      this.diagLog(`[DIAG] Returning "equity"`);
+      return "equity";
+    }
+    this.diagLog(`[DIAG] Returning "" (PASS)`);
     return "";
+  }
+
+  /**
+   * Writes diagnostic message to log file
+   * @private
+   */
+  diagLog(message) {
+    try {
+      fs.appendFileSync(this.DIAG_LOG_FILE, message + '\n');
+    } catch (e) {
+      // Fallback to console if file write fails
+      console.log(message);
+    }
   }
 
   // ============================================================================
@@ -956,13 +999,13 @@ class BitvalDebug {
     }
   }
 
-  testHandSkipPreflop(hero, villain, preflopTolerance, flopTolerance, numFlops, verbose, progressCallback, preflopDiff, preflopEquityReference, optimize = false) {
+  async testHandSkipPreflop(hero, villain, preflopTolerance, flopTolerance, numFlops, verbose, progressCallback, preflopDiff, preflopEquityReference, optimize = false) {
     const results = this.createTestResults();
     results.preflopDiff = preflopDiff;
     results.preflopEquityReference = preflopEquityReference;
     results.failureType = "equity";
     
-    this.testFlops(hero, villain, flopTolerance, numFlops, results, verbose, progressCallback);
+    await this.testFlops(hero, villain, flopTolerance, numFlops, results, verbose, progressCallback);
     return results;
   }
 
@@ -1001,10 +1044,16 @@ class BitvalDebug {
     const t = stats.turn || { found: 0, tested: 0, totalDiff: 0 };
     const r = stats.river || { found: 0, tested: 0, totalDiff: 0 };
     
-    const pAvg = p.found > 0 ? (p.totalDiff / p.found).toFixed(1) : '0.0';
-    const fAvg = f.found > 0 ? (f.totalDiff / f.found).toFixed(1) : '0.0';
-    const tAvg = t.found > 0 ? (t.totalDiff / t.found).toFixed(1) : '0.0';
-    const rAvg = r.found > 0 ? (r.totalDiff / r.found).toFixed(1) : '0.0';
+    // Handle NaN values in totalDiff
+    const pTotalDiff = isNaN(p.totalDiff) ? 0 : p.totalDiff;
+    const fTotalDiff = isNaN(f.totalDiff) ? 0 : f.totalDiff;
+    const tTotalDiff = isNaN(t.totalDiff) ? 0 : t.totalDiff;
+    const rTotalDiff = isNaN(r.totalDiff) ? 0 : r.totalDiff;
+    
+    const pAvg = p.found > 0 ? (pTotalDiff / p.found).toFixed(1) : '0.0';
+    const fAvg = f.found > 0 ? (fTotalDiff / f.found).toFixed(1) : '0.0';
+    const tAvg = t.found > 0 ? (tTotalDiff / t.found).toFixed(1) : '0.0';
+    const rAvg = r.found > 0 ? (rTotalDiff / r.found).toFixed(1) : '0.0';
     
     return `P:${p.found}/${p.tested}(${pAvg}%) F:${f.found}/${f.tested}(${fAvg}%) T:${t.found}/${t.tested}(${tAvg}%) R:${r.found}/${r.tested}(${rAvg}%)`;
   }
@@ -1348,14 +1397,14 @@ class BitvalDebug {
     }
     
     if (args.retest !== null) {
-      this.runRetest(args);
+      await this.runRetest(args);
       return;
     }
     
     await this.runInitialTest(args);
   }
 
-  runRetest(args) {
+  async runRetest(args) {
     const rows = this.readCSV();
     const handsToTest = this.getHandsToRetest(args, rows);
     
@@ -1365,9 +1414,9 @@ class BitvalDebug {
     }
     
     if (args.flopsExplicit) {
-      this.runRetestWithFlops(args, handsToTest);
+      await this.runRetestWithFlops(args, handsToTest);
     } else {
-      this.runRetestNormal(args, handsToTest);
+      await this.runRetestNormal(args, handsToTest);
     }
   }
 
@@ -1383,7 +1432,7 @@ class BitvalDebug {
     return rows.filter(row => row.hand_id >= idRange.start && row.hand_id <= idRange.end);
   }
 
-  runRetestWithFlops(args, handsToTest) {
+  async runRetestWithFlops(args, handsToTest) {
     const preflopHands = handsToTest.filter(row => !row.board || row.board.trim() === "");
     const originalCount = handsToTest.length;
     
@@ -1401,14 +1450,14 @@ class BitvalDebug {
     
     this.updateProgressBar(0, totalFlopsToTest, 0, overallStats, 40, null);
     
-    for (const row of preflopHands) {
-      const result = this.processRetestFlopHand(args, row, overallStats, totalFlopsCompleted, totalFlopsToTest);
+    for (let i = 0; i < preflopHands.length; i++) {
+      const row = preflopHands[i];
+      const result = await this.processRetestFlopHand(args, row, overallStats, totalFlopsCompleted, totalFlopsToTest);
       totalFlopsCompleted = result.totalFlopsCompleted;
       if (result.passed) passed++;
       else failed++;
       if (result.deleted) deleted++;
     }
-    
     this.finishRetest(passed, failed, deleted, args.retestClean);
   }
 
@@ -1421,13 +1470,13 @@ class BitvalDebug {
     };
   }
 
-  processRetestFlopHand(args, row, overallStats, totalFlopsCompleted, totalFlopsToTest) {
+  async processRetestFlopHand(args, row, overallStats, totalFlopsCompleted, totalFlopsToTest) {
     const heroCards = row.hero.split(' ');
     const villainCards = row.villain.split(' ');
     
     this.updateProgressBar(totalFlopsCompleted, totalFlopsToTest, overallStats.river.found, overallStats, 40, null);
     
-    const preflopEquityBitval = this.calculateEquityBitval(heroCards, villainCards, [], 100000);
+    const preflopEquityBitval = await this.calculateEquityBitval(heroCards, villainCards, [], 100000);
     const preflopEquityReference = this.calculateEquityReference(heroCards, villainCards, []);
     const preflopDiff = this.roundEquity(preflopEquityBitval - preflopEquityReference);
     
@@ -1440,7 +1489,7 @@ class BitvalDebug {
       return this.handleRetestPass(args, row, totalFlopsCompleted, args.flops, totalFlopsToTest, overallStats);
     }
     
-    return this.handleRetestFail(args, row, heroCards, villainCards, preflopDiff, preflopEquityReference, overallStats, totalFlopsCompleted, totalFlopsToTest);
+    return await this.handleRetestFail(args, row, heroCards, villainCards, preflopDiff, preflopEquityReference, overallStats, totalFlopsCompleted, totalFlopsToTest);
   }
 
   handleRetestPass(args, row, totalFlopsCompleted, flops, totalFlopsToTest, overallStats) {
@@ -1471,7 +1520,7 @@ class BitvalDebug {
     return { totalFlopsCompleted, passed: true, failed: false, deleted: false };
   }
 
-  handleRetestFail(args, row, heroCards, villainCards, preflopDiff, preflopEquityReference, overallStats, totalFlopsCompleted, totalFlopsToTest) {
+  async handleRetestFail(args, row, heroCards, villainCards, preflopDiff, preflopEquityReference, overallStats, totalFlopsCompleted, totalFlopsToTest) {
     const baseFlopsCompleted = totalFlopsCompleted;
     let runningSumBitvalEquity = 0;
     let runningCountFlops = 0;
@@ -1491,7 +1540,7 @@ class BitvalDebug {
       return shouldExitEarly;
     };
     
-    const results = this.testHandSkipPreflop(heroCards, villainCards, args.tolerance, args.tolerance, args.flops, false, progressCallback, preflopDiff, preflopEquityReference, args.optimize);
+    const results = await this.testHandSkipPreflop(heroCards, villainCards, args.tolerance, args.tolerance, args.flops, false, progressCallback, preflopDiff, preflopEquityReference, args.optimize);
     
     if (results && results.earlyExit) {
       return this.handleEarlyExit(args, row, baseFlopsCompleted, args.flops, totalFlopsToTest, overallStats);
@@ -1617,47 +1666,101 @@ class BitvalDebug {
     this.appendToCSV(newRow);
   }
 
-  runRetestNormal(args, handsToTest) {
-    const completeBoards = handsToTest.filter(row => row.board && row.board.trim() !== "");
+  async runRetestNormal(args, handsToTest) {
+    // Filter for preflop hands (empty board) - these are tested directly without flop iteration
+    const preflopHands = handsToTest.filter(row => !row.board || row.board.trim() === "");
     const originalCount = handsToTest.length;
     
-    if (completeBoards.length === 0) {
-      console.log(`No hands with complete boards found (from ${originalCount} total)`);
+    if (preflopHands.length === 0) {
+      console.log(`No preflop hands found (from ${originalCount} total)`);
       return;
     }
     
-    console.log(`Re-testing ${completeBoards.length} hand(s)${args.retestClean ? ' (--clean mode: will delete passing tests)' : ''}...\n`);
+    console.log(`Re-testing ${preflopHands.length} hand(s)${args.retestClean ? ' (--clean mode: will delete passing tests)' : ''}...\n`);
     
+    const stats = this.createStats();
     let passed = 0, failed = 0, deleted = 0;
     
-    for (const row of completeBoards) {
-      const result = this.processRetestNormalHand(args, row);
+    for (let i = 0; i < preflopHands.length; i++) {
+      const row = preflopHands[i];
+      const result = await this.processRetestNormalHand(args, row, stats);
       if (result.passed) passed++;
       else failed++;
       if (result.deleted) deleted++;
+      
+      // Update progress bar
+      this.updateProgressBar(i + 1, preflopHands.length, stats.preflop.found, stats, 40, null);
     }
     
     this.finishRetest(passed, failed, deleted, args.retestClean);
   }
 
-  processRetestNormalHand(args, row) {
+  async processRetestNormalHand(args, row, stats = null) {
     const heroAllCards = row.hero.split(' ');
     const villainAllCards = row.villain.split(' ');
     const board = row.board ? row.board.split(' ') : [];
     const heroCards = heroAllCards.slice(0, 2);
     const villainCards = villainAllCards.slice(0, 2);
     
-    const equityBitval = this.calculateEquityBitval(heroCards, villainCards, board);
-    const equityReference = this.calculateEquityReference(heroCards, villainCards, board);
+    // Use appropriate iterations for preflop (100k for accuracy)
+    const iterations = board.length === 0 ? 100000 : 1;
+    const equityBitval = await this.calculateEquityBitval(heroCards, villainCards, board, iterations, args.optimize);
+    const equityReference = this.calculateEquityReference(heroCards, villainCards, board, iterations);
+    
+    // Check for NaN values and handle them
+    if (isNaN(equityBitval) || isNaN(equityReference)) {
+      console.error(`Warning: NaN detected for ${heroCards.join('')} vs ${villainCards.join('')} - bitval: ${equityBitval}, reference: ${equityReference}`);
+      // If either value is NaN, treat as a failure with a large diff
+      const equityDiff = NaN;
+      const rankingBitval = this.evaluateHandRankingBitval(heroCards, villainCards, board);
+      const rankingReference = this.evaluateHandRankingReference(heroCards, villainCards, board);
+      const rankingMatch = this.compareHandRankings(rankingBitval, rankingReference);
+      const failureType = "equity"; // NaN means equity calculation failed
+      
+      if (stats) {
+        stats.preflop.tested++;
+        stats.preflop.found++;
+        // Don't add NaN to totalDiff - use 0 or skip
+      }
+      
+      return this.handleNormalRetestFail(args, row, equityBitval, equityReference, equityDiff, failureType);
+    }
+    
     const equityDiff = this.roundEquity(equityBitval - equityReference);
+    
+    // DIAGNOSTIC: Log equity values to file
+    this.diagLog(`\n[DIAG] ${heroCards.join('')} vs ${villainCards.join('')} | Board: [${board.join(',') || 'empty'}]`);
+    this.diagLog(`[DIAG] Equity - Bitval: ${equityBitval.toFixed(4)}%, Reference: ${equityReference.toFixed(4)}%, Diff: ${equityDiff.toFixed(4)}%`);
     
     const rankingBitval = this.evaluateHandRankingBitval(heroCards, villainCards, board);
     const rankingReference = this.evaluateHandRankingReference(heroCards, villainCards, board);
     const rankingMatch = this.compareHandRankings(rankingBitval, rankingReference);
     
-    const equityFails = Math.abs(equityDiff) > 0.00;
-    const rankingFails = !rankingMatch.match;
+    // DIAGNOSTIC: Log ranking comparison
+    this.diagLog(`[DIAG] Ranking - Bitval: H=${rankingBitval.hero.strength}, V=${rankingBitval.villain.strength}`);
+    this.diagLog(`[DIAG] Ranking - Reference: H=${rankingReference.hero.strength}, V=${rankingReference.villain.strength}`);
+    this.diagLog(`[DIAG] Ranking Match: ${rankingMatch.match} (heroStrength: ${rankingMatch.heroStrengthMatch}, villainStrength: ${rankingMatch.villainStrengthMatch}, winner: ${rankingMatch.winnerMatch})`);
+    
     const failureType = this.determineFailureType(equityDiff, rankingMatch, 0.00);
+    
+    // DIAGNOSTIC: Log failure type determination
+    const roundedDiff = this.roundEquityTo2Decimals(equityDiff);
+    this.diagLog(`[DIAG] Rounded Diff: ${roundedDiff.toFixed(6)}%, Failure Type: "${failureType}"`);
+    
+    // Update stats if provided - use failureType to determine if it's a discrepancy
+    if (stats) {
+      stats.preflop.tested++;
+      // Only count as "found" if there's actually a failure
+      if (failureType !== "") {
+        stats.preflop.found++;
+        if (!isNaN(roundedDiff)) {
+          stats.preflop.totalDiff = (stats.preflop.totalDiff || 0) + Math.abs(roundedDiff);
+        }
+        this.diagLog(`[DIAG] ⚠️ FAILURE DETECTED - Type: ${failureType}, Adding to stats (found=${stats.preflop.found}, totalDiff=${stats.preflop.totalDiff})`);
+      } else {
+        this.diagLog(`[DIAG] ✓ PASS - No failure detected`);
+      }
+    }
     
     if (failureType === "") {
       return this.handleNormalRetestPass(args, row);

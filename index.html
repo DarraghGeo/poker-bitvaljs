@@ -288,10 +288,10 @@
             
             <div class="form-group">
                 <label for="iterations">Iterations: <span id="iterationsValue">1,000</span></label>
-                <input type="range" id="iterations" min="1000" max="100000" step="1000" value="1000" style="width: 100%; margin-top: 8px;">
+                <input type="range" id="iterations" min="1000" max="1500000" step="1000" value="1000" style="width: 100%; margin-top: 8px;">
                 <div style="display: flex; justify-content: space-between; font-size: 12px; color: #666; margin-top: 4px;">
                     <span>1,000</span>
-                    <span>100,000</span>
+                    <span>1,500,000</span>
                 </div>
             </div>
             
@@ -359,18 +359,18 @@
                     const module = await import('https://raw.githubusercontent.com/DarraghGeo/poker-rangeman/refs/heads/main/src/rangeManager.js');
                     RangeManager = module.RangeManager || module.default?.RangeManager || module.default;
                     if (RangeManager) {
-                        console.log('Loaded RangeManager from GitHub');
+                        // RangeManager loaded from GitHub
                         return RangeManager;
                     }
                 } catch (e) {
-                    console.warn('Failed to load from GitHub, trying local script:', e);
+                    // Failed to load from GitHub, trying local script
                 }
             }
             
             // Fallback to local script (works for both file:// and http/https)
             return new Promise((resolve, reject) => {
                 if (window.RangeManager) {
-                    console.log('Loaded RangeManager from local script');
+                    // RangeManager loaded from local script
                     resolve(window.RangeManager);
                     return;
                 }
@@ -379,7 +379,7 @@
                 const checkInterval = setInterval(() => {
                     if (window.RangeManager) {
                         clearInterval(checkInterval);
-                        console.log('Loaded RangeManager from local script');
+                        // RangeManager loaded from local script
                         resolve(window.RangeManager);
                     }
                 }, 50);
@@ -388,7 +388,7 @@
                     clearInterval(checkInterval);
                     if (!window.RangeManager) {
                         reject(new Error('RangeManager script failed to load'));
-                    }
+                        }
                 }, 5000);
             });
         }
@@ -465,9 +465,7 @@
                 const player2Hands = parseRange(player2RangeStr);
                 const boardCards = parseBoardCards(boardStr);
                 
-                console.log('Parsed player1Hands:', player1Hands);
-                console.log('Parsed player2Hands:', player2Hands);
-                console.log('Parsed boardCards:', boardCards);
+                // Inputs parsed successfully
                 
                 if (player1Hands.length === 0) {
                     throw new Error('Player 1 range is required');
@@ -486,13 +484,7 @@
                 const iterations = parseInt(document.getElementById('iterations').value);
                 const progressInterval = parseInt(document.getElementById('progressInterval').value);
                 
-                console.log('Calling compareRange with:', {
-                    player1Hands: player1HandsFormatted.length,
-                    player2Hands: player2HandsFormatted.length,
-                    boardCards: boardCards.length,
-                    iterations: iterations,
-                    optimize: optimize
-                });
+                // Starting range comparison
                 
                 // Progress callback
                 const progressCallback = (current, total, message) => {
@@ -519,9 +511,7 @@
                 const endTime = performance.now();
                 const executionTime = endTime - startTime;
                 
-                // Debug: log the result
-                console.log('compareRange result:', result);
-                console.log('result.win:', result?.win, 'result.tie:', result?.tie, 'result.lose:', result?.lose);
+                // Range comparison completed
                 
                 // Calculate equities
                 if (!result || typeof result.win !== 'number' || typeof result.tie !== 'number' || typeof result.lose !== 'number') {

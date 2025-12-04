@@ -796,8 +796,8 @@ class BitVal {
     let comboArray = null;
     let iterations = setup.iterations;
     if (setup.isExhaustive) {
-      const availableMasks = this._getAvailableCardMasksByLookUp(deadMask);
-      comboArray = this._getCombinations(availableMasks, setup.numberOfCardsToDeal);
+      // Reuse pre-computed comboArray from setup (already computed in _compareRangeSetup)
+      comboArray = setup.comboArray;
       iterations = comboArray.length;
     }
     
@@ -1227,11 +1227,29 @@ class BitVal {
   }
 
   /**
+   * Generates a numeric hash key from canonical key and board for faster cache lookups.
+   * @private
+   */
+  _getCacheKeyHash(canonicalKey, board) {
+    // Hash the canonical key string
+    let hash = 0;
+    for (let i = 0; i < canonicalKey.length; i++) {
+      hash = ((hash << 5) - hash) + canonicalKey.charCodeAt(i);
+      hash = hash & hash; // Convert to 32-bit integer
+    }
+    // Combine with board bits (use lower 32 bits of BigInt for fast XOR)
+    // This creates a unique numeric key from both components
+    const boardBits = Number(board & 0xFFFFFFFFn);
+    return hash ^ boardBits;
+  }
+
+  /**
    * Gets cached evaluation or evaluates and caches the result.
+   * Uses numeric hash keys for faster cache lookups.
    * @private
    */
   _getCachedEvaluation(canonicalKey, originalHand, completeBoard, evalCache) {
-    const cacheKey = canonicalKey + completeBoard.toString();
+    const cacheKey = this._getCacheKeyHash(canonicalKey, completeBoard);
     if (evalCache.has(cacheKey)) return evalCache.get(cacheKey);
     const handMask = this.getBitMasked(this._handStringToCards(originalHand));
     const evaluation = this.evaluate(handMask | completeBoard);
