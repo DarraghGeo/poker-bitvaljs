@@ -672,13 +672,6 @@ class BitVal {
     // Generate valid matchups (always needed)
     const validMatchups = this._generateValidMatchups(heroHands, villainHands, boardCards);
     
-    // Log all valid matchups for debugging
-    console.log(`\n[Valid Matchups] Generated ${validMatchups.length} valid matchups:`);
-    for (let i = 0; i < validMatchups.length; i++) {
-      const m = validMatchups[i];
-      console.log(`  ${i + 1}. Hero: ${m.heroHand} vs Villain: ${m.villainHand}`);
-    }
-    
     // Calculate canonical mappings only if optimization is enabled
     let hCanon = null;
     let vCanon = null;
@@ -951,7 +944,6 @@ class BitVal {
     // Group validMatchups by canonical key pair
     // This ensures we only process matchups that actually exist, avoiding Cartesian product issues
     const matchupGroups = new Map();
-    console.log(`\n[Sequential - Grouping Matchups] Processing ${setup.validMatchups.length} valid matchups:`);
     for (const matchup of setup.validMatchups) {
       const mHKey = this._getCanonicalKey(
         matchup.heroHand, 
@@ -967,8 +959,6 @@ class BitVal {
       );
       const key = `${mHKey}:${mVKey}`;
       
-      console.log(`  Hero: ${matchup.heroHand} (${mHKey}) vs Villain: ${matchup.villainHand} (${mVKey}) -> Key: ${key}`);
-      
       if (!matchupGroups.has(key)) {
         matchupGroups.set(key, {
           heroKey: mHKey,
@@ -979,23 +969,15 @@ class BitVal {
       }
       matchupGroups.get(key).count++;
     }
-    console.log(`\n[Sequential - Matchup Groups] Created ${matchupGroups.size} unique canonical key pairs:`);
-    for (const [key, group] of matchupGroups) {
-      console.log(`  ${key}: ${group.count} matchup(s), example: ${group.representative.heroHand} vs ${group.representative.villainHand}`);
-    }
     
     // Calculate accurate total matchups (number of unique canonical key pairs)
     const totalMatchups = matchupGroups.size;
     
     let matchupIndex = 0;
     // Iterate over actual matchup groups (not Cartesian product)
-    console.log(`\n[Sequential - Evaluating Matchups] Starting evaluation of ${totalMatchups} unique matchups:`);
     for (const [key, group] of matchupGroups) {
       const validCount = group.count;
       const validPair = group.representative;
-      
-      // Log hand and canonical key mapping for debugging
-      console.log(`[Matchup] Hero: ${validPair.heroHand} (Key: ${group.heroKey}) vs Villain: ${validPair.villainHand} (Key: ${group.villainKey}) | Count: ${validCount}`);
       
       const cache = { 
         heroKey: group.heroKey, 
@@ -1014,12 +996,6 @@ class BitVal {
         matchupIndex, 
         totalMatchups
       );
-      
-      // Log equity results for this matchup
-      const totalIterations = matchupWin + matchupTie + matchupLose;
-      const equity = totalIterations > 0 ? (matchupWin + matchupTie / 2) / totalIterations * 100 : 0;
-      const weightedEquity = equity * validCount;
-      console.log(`[Equity] ${validPair.heroHand} vs ${validPair.villainHand} (${validCount}x): Win=${matchupWin}, Tie=${matchupTie}, Lose=${matchupLose}, Total=${totalIterations}, Equity=${equity.toFixed(2)}%, Weighted=${weightedEquity.toFixed(2)}%`);
       
       win += matchupWin * validCount;
       tie += matchupTie * validCount;
@@ -1077,7 +1053,6 @@ class BitVal {
     // Group validMatchups by canonical key pair
     // This ensures we only process matchups that actually exist, avoiding Cartesian product issues
     const matchupGroups = new Map();
-    console.log(`\n[Parallel - Grouping Matchups] Processing ${setup.validMatchups.length} valid matchups:`);
     for (const matchup of setup.validMatchups) {
       const mHKey = this._getCanonicalKey(
         matchup.heroHand, 
@@ -1093,8 +1068,6 @@ class BitVal {
       );
       const key = `${mHKey}:${mVKey}`;
       
-      console.log(`  Hero: ${matchup.heroHand} (${mHKey}) vs Villain: ${matchup.villainHand} (${mVKey}) -> Key: ${key}`);
-      
       if (!matchupGroups.has(key)) {
         matchupGroups.set(key, {
           heroKey: mHKey,
@@ -1105,17 +1078,11 @@ class BitVal {
       }
       matchupGroups.get(key).count++;
     }
-    console.log(`\n[Parallel - Matchup Groups] Created ${matchupGroups.size} unique canonical key pairs:`);
-    for (const [key, group] of matchupGroups) {
-      console.log(`  ${key}: ${group.count} matchup(s), example: ${group.representative.heroHand} vs ${group.representative.villainHand}`);
-    }
     
     // Collect all matchups to evaluate (only those that actually exist)
     const matchupsToEvaluate = [];
-    console.log(`\n[Parallel - Collecting Matchups] Building matchup list from ${matchupGroups.size} groups:`);
     for (const [key, group] of matchupGroups) {
       const validPair = group.representative;
-      console.log(`  Adding: ${key} (${group.count}x) - Hero: ${validPair.heroHand} vs Villain: ${validPair.villainHand}`);
       matchupsToEvaluate.push({
         key,
         validCount: group.count,
@@ -1127,7 +1094,6 @@ class BitVal {
         villainMask: validPair.villainMask
       });
     }
-    console.log(`\n[Parallel - Matchups to Evaluate] Total: ${matchupsToEvaluate.length} unique matchups`);
     
     // Calculate total matchups (number of unique canonical key pairs)
     const totalMatchups = matchupsToEvaluate.length;
@@ -1208,18 +1174,6 @@ class BitVal {
       
       for (const batchResults of allResults) {
         for (const result of batchResults) {
-          // Log equity results for this matchup
-          const totalIterations = result.matchupWin + result.matchupTie + result.matchupLose;
-          const equity = totalIterations > 0 ? (result.matchupWin + result.matchupTie / 2) / totalIterations * 100 : 0;
-          const weightedEquity = equity * result.validCount;
-          
-          // Find the matchup details from matchupsToEvaluate
-          const matchup = matchupsToEvaluate.find(m => m.key === result.key);
-          const heroHand = matchup ? matchup.heroHand : 'Unknown';
-          const villainHand = matchup ? matchup.villainHand : 'Unknown';
-          
-          console.log(`[Equity] ${heroHand} vs ${villainHand} (${result.validCount}x): Win=${result.matchupWin}, Tie=${result.matchupTie}, Lose=${result.matchupLose}, Total=${totalIterations}, Equity=${equity.toFixed(2)}%, Weighted=${weightedEquity.toFixed(2)}%`);
-          
           win += result.matchupWin * result.validCount;
           tie += result.matchupTie * result.validCount;
           lose += result.matchupLose * result.validCount;
@@ -1357,21 +1311,12 @@ class BitVal {
     const canonicalToHand = new Map();
     const boardSuitCounts = boardCards.length > 0 ? this._getBoardSuitCounts(boardCards) : null;
     
-    console.log(`\n[Canonical Mapping] Processing ${hands.length} hands:`);
     for (const hand of hands) {
       const key = this._getCanonicalKey(hand, boardCards, numberOfBoardCards, boardSuitCounts);
       canonicalMap.set(key, (canonicalMap.get(key) || 0) + 1);
       if (!canonicalToHand.has(key)) {
         canonicalToHand.set(key, hand);
       }
-      console.log(`  Hand: ${hand} -> Canonical Key: ${key}`);
-    }
-    
-    // Show summary of canonical key groupings
-    console.log(`\n[Canonical Summary] ${canonicalMap.size} unique canonical keys from ${hands.length} hands:`);
-    for (const [key, count] of canonicalMap.entries()) {
-      const representativeHand = canonicalToHand.get(key);
-      console.log(`  ${key}: ${count} hand(s), example: ${representativeHand}`);
     }
     
     return { canonicalMap, canonicalToHand };
