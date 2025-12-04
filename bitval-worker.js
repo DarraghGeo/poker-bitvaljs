@@ -39,6 +39,7 @@ function deserializeMatchup(matchupData) {
 async function evaluateMatchupInWorker(heroMask, villainMask, setup, evalCache, cacheInfo, bitval) {
   let win = 0, tie = 0, lose = 0;
   const deadMask = heroMask | villainMask | setup.deadCardsMask;
+  const matchupDeadMask = heroMask | villainMask; // Only matchup-level dead cards (excludes setup.deadCardsMask)
   
   // Initialize random number generator for Monte Carlo (not needed for exhaustive)
   if (!setup.isExhaustive) {
@@ -71,8 +72,8 @@ async function evaluateMatchupInWorker(heroMask, villainMask, setup, evalCache, 
     // Evaluate both hands
     let hEval, hKick, vEval, vKick;
     if (cacheInfo && evalCache) {
-      [hEval, hKick] = bitval._getCachedEvaluation(cacheInfo.heroKey, cacheInfo.heroHand, board, evalCache);
-      [vEval, vKick] = bitval._getCachedEvaluation(cacheInfo.villainKey, cacheInfo.villainHand, board, evalCache);
+      [hEval, hKick] = bitval._getCachedEvaluation(cacheInfo.heroKey, cacheInfo.heroHand, board, evalCache, matchupDeadMask);
+      [vEval, vKick] = bitval._getCachedEvaluation(cacheInfo.villainKey, cacheInfo.villainHand, board, evalCache, matchupDeadMask);
     } else {
       [hEval, hKick] = bitval.evaluate(heroMask | board);
       [vEval, vKick] = bitval.evaluate(villainMask | board);

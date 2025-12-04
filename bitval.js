@@ -793,6 +793,7 @@ class BitVal {
   async _evaluateMatchup(heroMask, villainMask, setup, evalCache = null, progressCallback = null, matchupIndex = 0, totalMatchups = 1) {
     let win = 0, tie = 0, lose = 0;
     const deadMask = heroMask | villainMask | setup.deadCardsMask;
+    const matchupDeadMask = heroMask | villainMask; // Only matchup-level dead cards (excludes setup.deadCardsMask)
     
     // Initialize random number generator for Monte Carlo (not needed for exhaustive)
     if (!setup.isExhaustive) {
@@ -822,8 +823,8 @@ class BitVal {
       // Evaluate both hands - inlined for performance (no function call overhead)
       let hEval, hKick, vEval, vKick;
       if (evalCache) {
-        [hEval, hKick] = this._getCachedEvaluation(evalCache.heroKey, evalCache.heroHand, board, evalCache.cache);
-        [vEval, vKick] = this._getCachedEvaluation(evalCache.villainKey, evalCache.villainHand, board, evalCache.cache);
+        [hEval, hKick] = this._getCachedEvaluation(evalCache.heroKey, evalCache.heroHand, board, evalCache.cache, matchupDeadMask);
+        [vEval, vKick] = this._getCachedEvaluation(evalCache.villainKey, evalCache.villainHand, board, evalCache.cache, matchupDeadMask);
       } else {
         [hEval, hKick] = this.evaluate(heroMask | board);
         [vEval, vKick] = this.evaluate(villainMask | board);
@@ -1252,7 +1253,7 @@ class BitVal {
    * Generates a numeric hash key from canonical key and board for faster cache lookups.
    * @private
    */
-  _getCacheKeyHash(canonicalKey, board) {
+  _getCacheKeyHash(canonicalKey, board, matchupDeadMask = 0n) {
     // Hash the canonical key string
     let hash = 0;
     for (let i = 0; i < canonicalKey.length; i++) {
@@ -1260,9 +1261,13 @@ class BitVal {
       hash = hash & hash; // Convert to 32-bit integer
     }
     // Combine with board bits (use lower 32 bits of BigInt for fast XOR)
-    // This creates a unique numeric key from both components
     const boardBits = Number(board & 0xFFFFFFFFn);
-    return hash ^ boardBits;
+    hash = hash ^ boardBits;
+    
+    // Include matchup dead mask to prevent cross-matchup cache collisions
+    // This ensures different matchups (with different dead cards) don't share cache entries
+    const deadBits = Number(matchupDeadMask & 0xFFFFFFFFn);
+    return hash ^ deadBits;
   }
 
   /**
@@ -1270,8 +1275,8 @@ class BitVal {
    * Uses numeric hash keys for faster cache lookups.
    * @private
    */
-  _getCachedEvaluation(canonicalKey, originalHand, completeBoard, evalCache) {
-    const cacheKey = this._getCacheKeyHash(canonicalKey, completeBoard);
+  _getCachedEvaluation(canonicalKey, originalHand, completeBoard, evalCache, matchupDeadMask = 0n) {
+    const cacheKey = this._getCacheKeyHash(canonicalKey, completeBoard, matchupDeadMask);
     if (evalCache.has(cacheKey)) return evalCache.get(cacheKey);
     const handMask = this.getBitMasked(this._handStringToCards(originalHand));
     const evaluation = this.evaluate(handMask | completeBoard);
