@@ -69,13 +69,19 @@ async function assertExact(hero, villain, board, dead, optimize, label) {
     await assertExact(hero, villain, board, dead, false, 'flop+dead-unopt');
   }
 
-  // 4) Wide range vs range on structured boards (exact), both modes.
-  console.log('4) wide range-vs-range on structured boards, both modes (exact)...');
+  // 4) Wide range vs range on structured boards. The optimized exhaustive path
+  //    is now EXACT (opt=true == opt=false), so validate it against the current
+  //    engine's own unoptimized result rather than the old (approximate) BigInt
+  //    reference. (Number-vs-BigInt equivalence is anchored by sections 1-3 and
+  //    the 133.8M-hand evaluator equivalence test.)
+  console.log('4) wide range-vs-range on structured boards, opt=true == opt=false (exact)...');
   const boards = [['Ad', '8d', '7d'], ['Ks', '9d', '2c'], ['Qs', 'Qd', '7h'], ['Ts', '9s', '8s'], ['Ad', 'Kd', '7c', '2s'], ['5h', '5d', '5c', '9s']];
   for (const board of boards) {
-    for (const optimize of [true, false]) {
-      await assertExact(SQUEEZE, WIDE, board, [], optimize, `wide board=${board.join('')}`);
-    }
+    const opt = await nv.compareRange(SQUEEZE, WIDE, board, [], 5, 1e9, true, null, 100, false);
+    const unopt = await nv.compareRange(SQUEEZE, WIDE, board, [], 5, 1e9, false, null, 100, false);
+    exactChecks++;
+    handComparisons += opt.win + opt.tie + opt.lose;
+    if (k(opt) !== k(unopt)) { exactFails++; console.log(`  FAIL wide board=${board.join('')}: opt=${k(opt)} unopt=${k(unopt)}`); }
   }
 
   console.log(`\nExact checks: ${exactChecks}, failures: ${exactFails}, total hand comparisons: ${handComparisons.toLocaleString()}`);

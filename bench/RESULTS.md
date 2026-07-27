@@ -17,7 +17,33 @@ will amplify BigInt-related differences.
 |---|---|---|---|---|---|
 | v1.2.1 (string key) — baseline | 92 | 57 | 94 | 3373 | 6681 |
 | cache removed + worker pool (v1.3.0) | 67 | 45 | 71 | 2957 | 4625 |
-| **opt/4 Number evaluator** | **2.4** | **~2** | **~2** | **108** | **255** (200k) |
+| opt/4 Number evaluator (v1.4.0) | 2.4 | ~2 | ~2 | 108 | 255 (200k) |
+| **opt/5-7 (tables + typed arrays + exact counting)** | **1.8** | **1.6** | **1.5** | **50** | **151** |
+
+## opt/5-7 (this branch) — A/B vs the v1.4.0 baseline
+
+`node bench/ab.js` (current bitval.js vs frozen `bench/bitval-baseline.js`):
+
+| scenario | speedup vs 1.4.0 |
+|---|--:|
+| narrow-monotone | 1.48× |
+| narrow-rainbow | 1.00× (canonical grouping already collapses this board) |
+| narrow-twotone | 1.43× |
+| wide-238×238 | **2.34×** |
+| preflop-mc | 1.68× |
+
+- **#1** 8K lookup tables (popcount + straight) in `_eval7`.
+- **#2** typed-array data layout (flat combo suits, packed deal pool).
+- **#3c** exhaustive path is now **exact evaluate-once**: each unique concrete
+  hand evaluated once per runout; large range-vs-range counted via a sorted
+  villain array + binary search minus card-conflict correction. This makes
+  `optimize=true` **byte-identical to unoptimized** on flop/turn — the ±0.5%
+  canonical-folding approximation is *removed* for exhaustive (it now applies
+  only to preflop Monte Carlo).
+
+Correctness: `bench/exact-optimize.js` — 0 mismatches over 600 randomized
+range-vs-range scenarios (76M comparisons); differential 4806 checks, 0 fails;
+evaluator equivalence over all 133.8M 7-card hands unchanged.
 
 Single-threaded, best-of-3. The Number evaluator replaces the BigInt hand
 evaluator and dealing in the hot loop (cards are four 13-bit suit rank masks;

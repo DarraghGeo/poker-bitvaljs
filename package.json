@@ -4,9 +4,10 @@
   "description": "High-performance poker hand evaluator optimized for browser environments, using bitwise operations for rapid poker hand analysis and equity calculations.",
   "main": "bitval.js",
   "scripts": {
-    "test": "node bench/correctness.js && node bench/determinism.js && node bench/eval-equivalence.js 1000000",
-    "test:full": "node bench/eval-equivalence.js --full && node bench/engine-differential.js",
+    "test": "node bench/correctness.js && node bench/determinism.js && node bench/exact-optimize.js 300 && node bench/eval-equivalence.js 1000000",
+    "test:full": "node bench/eval-equivalence.js --full && node bench/engine-differential.js && node bench/exact-optimize.js 2000",
     "test:equiv": "node bench/eval-equivalence.js",
+    "test:exact": "node bench/exact-optimize.js",
     "test:differential": "node bench/engine-differential.js",
     "bench": "node bench/bench.js",
     "bench:correct": "node bench/correctness.js",

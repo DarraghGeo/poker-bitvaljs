@@ -1128,101 +1128,120 @@ class BitVal {
       ? this._getBoardSuitCounts(setup.boardCards) 
       : null;
     
-    // Group validMatchups by canonical key pair
-    // This ensures we only process matchups that actually exist, avoiding Cartesian product issues
-    const matchupGroups = new Map();
-    for (const matchup of setup.validMatchups) {
-      const mHKey = this._getCanonicalKey(
-        matchup.heroHand, 
-        setup.boardCards, 
-        setup.numberOfBoardCards, 
-        boardSuitCounts
-      );
-      const mVKey = this._getCanonicalKey(
-        matchup.villainHand, 
-        setup.boardCards, 
-        setup.numberOfBoardCards, 
-        boardSuitCounts
-      );
-      const key = `${mHKey}:${mVKey}`;
-      
-      if (!matchupGroups.has(key)) {
-        matchupGroups.set(key, {
-          heroKey: mHKey,
-          villainKey: mVKey,
-          representative: matchup,
-          count: 0
-        });
+    // Monte Carlo (>=3 cards to come): canonical grouping + independent
+    // per-matchup sampling (each matchup deals its own boards, so runouts can't
+    // be shared). Grouping only pays off here, where a matchup is expensive.
+    if (!setup.isExhaustive) {
+      const matchupGroups = new Map();
+      for (const matchup of setup.validMatchups) {
+        const mHKey = this._getCanonicalKey(matchup.heroHand, setup.boardCards, setup.numberOfBoardCards, boardSuitCounts);
+        const mVKey = this._getCanonicalKey(matchup.villainHand, setup.boardCards, setup.numberOfBoardCards, boardSuitCounts);
+        const key = `${mHKey}:${mVKey}`;
+        let g = matchupGroups.get(key);
+        if (!g) { g = { heroKey: mHKey, villainKey: mVKey, representative: matchup, count: 0 }; matchupGroups.set(key, g); }
+        g.count++;
       }
-      matchupGroups.get(key).count++;
-    }
-    
-    // Calculate accurate total matchups (number of unique canonical key pairs)
-    const totalMatchups = matchupGroups.size;
-    
-    let matchupIndex = 0;
-    // Iterate over actual matchup groups (not Cartesian product)
-    for (const [key, group] of matchupGroups) {
-      const validCount = group.count;
-      const validPair = group.representative;
-      
-      const cache = {
-        heroKey: group.heroKey,
-        heroHand: validPair.heroHand,
-        villainKey: group.villainKey,
-        villainHand: validPair.villainHand,
-        cache: null
-      };
-      
-      const { matchupWin, matchupTie, matchupLose } = await this._evaluateMatchup(
-        validPair.heroMask, 
-        validPair.villainMask, 
-        setup, 
-        cache, 
-        progressCallback, 
-        matchupIndex, 
-        totalMatchups
-      );
-      
-      win += matchupWin * validCount;
-      tie += matchupTie * validCount;
-      lose += matchupLose * validCount;
-      
-      matchupIndex++;
-      if (progressCallback && matchupIndex % progressInterval === 0) {
-        const now = Date.now();
-        const shouldUpdateProgress = now - lastProgressTime >= progressUpdateInterval;
-        
-        // Use modern browser APIs for better scheduling when available
-        if (typeof scheduler !== 'undefined' && scheduler.postTask) {
-          await scheduler.postTask(() => {
-            if (shouldUpdateProgress) {
-              progressCallback(matchupIndex, totalMatchups, `Evaluating ${matchupIndex}`);
-              lastProgressTime = now;
-            }
-          }, { priority: 'user-blocking' });
-        } else if (typeof requestIdleCallback !== 'undefined') {
-          await new Promise(resolve => {
-            requestIdleCallback(() => {
-              if (shouldUpdateProgress) {
-                progressCallback(matchupIndex, totalMatchups, `Evaluating ${matchupIndex}`);
-                lastProgressTime = now;
-              }
-              resolve();
-            }, { timeout: 1 });
-          });
-        } else {
-          // Fallback to setTimeout
-          await new Promise(resolve => setTimeout(resolve, 0));
-          if (shouldUpdateProgress) {
-            progressCallback(matchupIndex, totalMatchups, `Evaluating ${matchupIndex}`);
-            lastProgressTime = now;
+      const totalMatchups = matchupGroups.size;
+      let matchupIndex = 0;
+      for (const [key, group] of matchupGroups) {
+        const validCount = group.count;
+        const validPair = group.representative;
+        const cache = {
+          heroKey: group.heroKey, heroHand: validPair.heroHand,
+          villainKey: group.villainKey, villainHand: validPair.villainHand, cache: null
+        };
+        const { matchupWin, matchupTie, matchupLose } = await this._evaluateMatchup(
+          validPair.heroMask, validPair.villainMask, setup, cache, progressCallback, matchupIndex, totalMatchups
+        );
+        win += matchupWin * validCount;
+        tie += matchupTie * validCount;
+        lose += matchupLose * validCount;
+        matchupIndex++;
+        if (progressCallback && matchupIndex % progressInterval === 0) {
+          const now = Date.now();
+          const shouldUpdateProgress = now - lastProgressTime >= progressUpdateInterval;
+          if (typeof scheduler !== 'undefined' && scheduler.postTask) {
+            await scheduler.postTask(() => { if (shouldUpdateProgress) { progressCallback(matchupIndex, totalMatchups, `Evaluating ${matchupIndex}`); lastProgressTime = now; } }, { priority: 'user-blocking' });
+          } else if (typeof requestIdleCallback !== 'undefined') {
+            await new Promise(resolve => { requestIdleCallback(() => { if (shouldUpdateProgress) { progressCallback(matchupIndex, totalMatchups, `Evaluating ${matchupIndex}`); lastProgressTime = now; } resolve(); }, { timeout: 1 }); });
+          } else {
+            await new Promise(resolve => setTimeout(resolve, 0));
+            if (shouldUpdateProgress) { progressCallback(matchupIndex, totalMatchups, `Evaluating ${matchupIndex}`); lastProgressTime = now; }
           }
         }
       }
+      if (progressCallback) progressCallback(matchupIndex, matchupIndex, 'Complete');
+      return { win, tie, lose };
     }
-    
-    if (progressCallback) progressCallback(matchupIndex, matchupIndex, 'Complete');
+
+    // Exhaustive: EXACT evaluate-once. All matchups share the same runouts, so
+    // evaluate each UNIQUE concrete hero/villain hand once per runout. Small
+    // fields resolve valid pairs directly; large range-vs-range uses a sorted
+    // villain array + binary-search counting (minus card-conflicting pairs).
+    // Both are byte-identical to the unoptimized computation.
+    const heroIdx = new Map(), villIdx = new Map();
+    const heroSuit = [], villSuit = [], pairH = [], pairV = [];
+    for (const m of setup.validMatchups) {
+      let hi = heroIdx.get(m.heroMask);
+      if (hi === undefined) { hi = heroSuit.length >> 2; heroIdx.set(m.heroMask, hi); const s = this._suitsFromBigMask(m.heroMask); heroSuit.push(s[0], s[1], s[2], s[3]); }
+      let vi = villIdx.get(m.villainMask);
+      if (vi === undefined) { vi = villSuit.length >> 2; villIdx.set(m.villainMask, vi); const s = this._suitsFromBigMask(m.villainMask); villSuit.push(s[0], s[1], s[2], s[3]); }
+      pairH.push(hi); pairV.push(vi);
+    }
+    const H = heroSuit.length >> 2, V = villSuit.length >> 2, P = pairH.length;
+    const hSuit = Int32Array.from(heroSuit), vSuit = Int32Array.from(villSuit);
+    const pHa = Int32Array.from(pairH), pVa = Int32Array.from(pairV);
+
+    const boardBaseSuits = setup._boardSuits || (setup._boardSuits = this._suitsFromBigMask(setup.boardMask));
+    const bb0 = boardBaseSuits[0], bb1 = boardBaseSuits[1], bb2 = boardBaseSuits[2], bb3 = boardBaseSuits[3];
+    const comboSuits = setup._comboSuits || (setup._comboSuits = this._buildComboSuits(setup.comboArray));
+    const nRun = comboSuits.length >> 2;
+    const heroVals = new Int32Array(H), villVals = new Int32Array(V);
+
+    // Counting pays off only when many heroes reuse one sorted villain array AND
+    // there are enough villains for binary search to beat a direct scan.
+    const useCount = H >= 16 && V >= 16;
+    let confList = null, confOff = null, sortedV = null;
+    if (useCount) {
+      const confListArr = [];
+      confOff = new Int32Array(H + 1);
+      for (let h = 0; h < H; h++) {
+        const q = h << 2, a0 = hSuit[q], a1 = hSuit[q + 1], a2 = hSuit[q + 2], a3 = hSuit[q + 3];
+        for (let v = 0; v < V; v++) { const r = v << 2; if ((a0 & vSuit[r]) | (a1 & vSuit[r + 1]) | (a2 & vSuit[r + 2]) | (a3 & vSuit[r + 3])) confListArr.push(v); }
+        confOff[h + 1] = confListArr.length;
+      }
+      confList = Int32Array.from(confListArr);
+      sortedV = new Int32Array(V);
+    }
+
+    for (let i = 0; i < nRun; i++) {
+      const b = i << 2;
+      const d0 = bb0 | comboSuits[b], d1 = bb1 | comboSuits[b + 1], d2 = bb2 | comboSuits[b + 2], d3 = bb3 | comboSuits[b + 3];
+      for (let h = 0; h < H; h++) { const q = h << 2; heroVals[h] = this._eval7(hSuit[q] | d0, hSuit[q + 1] | d1, hSuit[q + 2] | d2, hSuit[q + 3] | d3); }
+      for (let v = 0; v < V; v++) { const q = v << 2; villVals[v] = this._eval7(vSuit[q] | d0, vSuit[q + 1] | d1, vSuit[q + 2] | d2, vSuit[q + 3] | d3); }
+
+      if (useCount) {
+        sortedV.set(villVals);
+        sortedV.sort(); // numeric ascending (typed array default)
+        for (let h = 0; h < H; h++) {
+          const x = heroVals[h];
+          let lo = 0, hb = V; while (lo < hb) { const mid = (lo + hb) >> 1; if (sortedV[mid] < x) lo = mid + 1; else hb = mid; }
+          let up = lo; hb = V; while (up < hb) { const mid = (up + hb) >> 1; if (sortedV[mid] <= x) up = mid + 1; else hb = mid; }
+          let wH = lo, tH = up - lo, lH = V - up;
+          for (let ci = confOff[h], end = confOff[h + 1]; ci < end; ci++) { const cv = villVals[confList[ci]]; if (cv < x) wH--; else if (cv === x) tH--; else lH--; }
+          win += wH; tie += tH; lose += lH;
+        }
+      } else {
+        for (let p = 0; p < P; p++) { const hv = heroVals[pHa[p]], vv = villVals[pVa[p]]; if (hv > vv) win++; else if (vv > hv) lose++; else tie++; }
+      }
+
+      if (progressCallback && (i & 0xFF) === 0 && i > 0) {
+        const now = Date.now();
+        if (now - lastProgressTime >= progressUpdateInterval) { progressCallback(i, nRun, `Evaluating runout ${i}/${nRun}`); lastProgressTime = now; }
+        await new Promise(resolve => setTimeout(resolve, 0));
+      }
+    }
+    if (progressCallback) progressCallback(nRun, nRun, 'Complete');
     return { win, tie, lose };
   }
 
