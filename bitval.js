@@ -1256,11 +1256,26 @@ class BitVal {
       return { win, tie, lose };
     }
 
-    // Exhaustive: EXACT evaluate-once. All matchups share the same runouts, so
-    // evaluate each UNIQUE concrete hero/villain hand once per runout. Small
-    // fields resolve valid pairs directly; large range-vs-range uses a sorted
-    // villain array + binary-search counting (minus card-conflicting pairs).
-    // Both are byte-identical to the unoptimized computation.
+    // Exhaustive: EXACT evaluate-once. Build the shared work structure and run
+    // the kernel over all runouts. The Web Worker path (_compareRangeOptimized)
+    // runs the SAME kernel over runout slices, so workers and sequential agree
+    // byte-for-byte.
+    const work = this._buildExhaustiveWork(setup);
+    const comboSuits = setup._comboSuits || (setup._comboSuits = this._buildComboSuits(setup.comboArray));
+    const nRun = comboSuits.length >> 2;
+    const r = this._runExhaustive(work, comboSuits, 0, nRun);
+    if (progressCallback) progressCallback(nRun, nRun, 'Complete');
+    return r;
+  }
+
+  /**
+   * Builds the reusable per-run work for the exact exhaustive kernel: unique
+   * concrete hero/villain suit masks, the valid-pair list, and (for large
+   * fields) the card-conflict CSR. Everything is transferable typed arrays so
+   * it can be serialized to workers unchanged.
+   * @private
+   */
+  _buildExhaustiveWork(setup) {
     const heroIdx = new Map(), villIdx = new Map();
     const heroSuit = [], villSuit = [], pairH = [], pairV = [];
     for (const m of setup.validMatchups) {
@@ -1273,17 +1288,10 @@ class BitVal {
     const H = heroSuit.length >> 2, V = villSuit.length >> 2, P = pairH.length;
     const hSuit = Int32Array.from(heroSuit), vSuit = Int32Array.from(villSuit);
     const pHa = Int32Array.from(pairH), pVa = Int32Array.from(pairV);
+    const bb = setup._boardSuits || (setup._boardSuits = this._suitsFromBigMask(setup.boardMask));
 
-    const boardBaseSuits = setup._boardSuits || (setup._boardSuits = this._suitsFromBigMask(setup.boardMask));
-    const bb0 = boardBaseSuits[0], bb1 = boardBaseSuits[1], bb2 = boardBaseSuits[2], bb3 = boardBaseSuits[3];
-    const comboSuits = setup._comboSuits || (setup._comboSuits = this._buildComboSuits(setup.comboArray));
-    const nRun = comboSuits.length >> 2;
-    const heroVals = new Int32Array(H), villVals = new Int32Array(V);
-
-    // Counting pays off only when many heroes reuse one sorted villain array AND
-    // there are enough villains for binary search to beat a direct scan.
     const useCount = H >= 16 && V >= 16;
-    let confList = null, confOff = null, sortedV = null;
+    let confList = null, confOff = null;
     if (useCount) {
       const confListArr = [];
       confOff = new Int32Array(H + 1);
@@ -1293,18 +1301,30 @@ class BitVal {
         confOff[h + 1] = confListArr.length;
       }
       confList = Int32Array.from(confListArr);
-      sortedV = new Int32Array(V);
     }
+    return { hSuit, vSuit, pHa, pVa, confList, confOff, useCount, bb0: bb[0], bb1: bb[1], bb2: bb[2], bb3: bb[3], H, V, P };
+  }
 
-    for (let i = 0; i < nRun; i++) {
+  /**
+   * Exact exhaustive kernel over runouts [runStart, runEnd). Evaluates each
+   * unique concrete hand once per runout, then resolves matchups by direct
+   * comparison (small fields) or sorted-villain binary-search counting with
+   * card-conflict correction (large fields). Byte-identical to unoptimized.
+   * @private
+   */
+  _runExhaustive(work, comboSuits, runStart, runEnd) {
+    const { hSuit, vSuit, pHa, pVa, confList, confOff, useCount, bb0, bb1, bb2, bb3, H, V, P } = work;
+    const heroVals = new Int32Array(H), villVals = new Int32Array(V);
+    const sortedV = useCount ? new Int32Array(V) : null;
+    let win = 0, tie = 0, lose = 0;
+    for (let i = runStart; i < runEnd; i++) {
       const b = i << 2;
       const d0 = bb0 | comboSuits[b], d1 = bb1 | comboSuits[b + 1], d2 = bb2 | comboSuits[b + 2], d3 = bb3 | comboSuits[b + 3];
       for (let h = 0; h < H; h++) { const q = h << 2; heroVals[h] = this._eval7(hSuit[q] | d0, hSuit[q + 1] | d1, hSuit[q + 2] | d2, hSuit[q + 3] | d3); }
       for (let v = 0; v < V; v++) { const q = v << 2; villVals[v] = this._eval7(vSuit[q] | d0, vSuit[q + 1] | d1, vSuit[q + 2] | d2, vSuit[q + 3] | d3); }
-
       if (useCount) {
         sortedV.set(villVals);
-        sortedV.sort(); // numeric ascending (typed array default)
+        sortedV.sort();
         for (let h = 0; h < H; h++) {
           const x = heroVals[h];
           let lo = 0, hb = V; while (lo < hb) { const mid = (lo + hb) >> 1; if (sortedV[mid] < x) lo = mid + 1; else hb = mid; }
@@ -1316,14 +1336,7 @@ class BitVal {
       } else {
         for (let p = 0; p < P; p++) { const hv = heroVals[pHa[p]], vv = villVals[pVa[p]]; if (hv > vv) win++; else if (vv > hv) lose++; else tie++; }
       }
-
-      if (progressCallback && (i & 0xFF) === 0 && i > 0) {
-        const now = Date.now();
-        if (now - lastProgressTime >= progressUpdateInterval) { progressCallback(i, nRun, `Evaluating runout ${i}/${nRun}`); lastProgressTime = now; }
-        await new Promise(resolve => setTimeout(resolve, 0));
-      }
     }
-    if (progressCallback) progressCallback(nRun, nRun, 'Complete');
     return { win, tie, lose };
   }
 
@@ -1333,9 +1346,21 @@ class BitVal {
    * @private
    */
   async _compareRangeOptimized(setup, progressCallback = null, progressInterval = 100, useWorkers = true) {
+    // Exhaustive (flop/turn): run the EXACT kernel on the main thread. It's now
+    // fast enough (~tens of ms) that this is the right choice, and it makes the
+    // worker and non-worker paths agree byte-for-byte (fixes the exact-vs-
+    // approximate split that per-canonical-group workers had). Splitting runouts
+    // across workers was a net loss here (structured-cloning the pair/conflict
+    // work to every worker dwarfs the compute) — true off-thread parallelism of
+    // this path needs SharedArrayBuffer (COOP/COEP), left as a follow-up. The
+    // reusable _runExhaustive / _buildExhaustiveWork are kept for that.
+    if (setup.isExhaustive) {
+      return await this._compareRangeOptimizedSequential(setup, progressCallback, progressInterval);
+    }
+
     // Pre-calculate board suit counts once (constant for all matchups)
-    const boardSuitCounts = setup.boardCards.length > 0 
-      ? this._getBoardSuitCounts(setup.boardCards) 
+    const boardSuitCounts = setup.boardCards.length > 0
+      ? this._getBoardSuitCounts(setup.boardCards)
       : null;
     
     // Group validMatchups by canonical key pair

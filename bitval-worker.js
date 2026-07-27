@@ -99,17 +99,30 @@ async function evaluateMatchupInWorker(heroMask, villainMask, setup, evalCache, 
   return { matchupWin: win, matchupTie: tie, matchupLose: lose };
 }
 
+// Reused BitVal instance (holds the lookup tables; cheap to keep around).
+const _bitval = new BitVal();
+
 // Worker message handler
 self.onmessage = async function(e) {
   try {
+    // Exhaustive exact kernel over a runout slice (opt/7): run the SAME
+    // _runExhaustive as the main thread on [runStart, runEnd) and return the
+    // partial win/tie/lose. Keeps the worker path byte-identical to sequential.
+    if (e.data && e.data.exhaustive) {
+      const { work, comboSuits, runStart, runEnd } = e.data;
+      const result = _bitval._runExhaustive(work, comboSuits, runStart, runEnd);
+      self.postMessage({ success: true, result });
+      return;
+    }
+
     const { matchups, setupData, workerId } = e.data;
-    
+
     // Deserialize setup
     const setup = deserializeSetup(setupData);
-    
+
     // Create BitVal instance for this worker (reused for all matchups).
     // Per-eval cache removed (see BitVal._getCachedEvaluation); grouping does the work.
-    const bitval = new BitVal();
+    const bitval = _bitval;
     const evalCache = null;
     
     const results = [];

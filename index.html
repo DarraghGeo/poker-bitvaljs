@@ -385,7 +385,14 @@
         async function init() {
             // BitVal is loaded via script tag, so it's available as window.BitVal
             bitval = new window.BitVal();
-            
+
+            // Load the exact preflop equity table (optional). Enables instant,
+            // exact preflop range-vs-range; falls back to Monte Carlo if absent.
+            fetch('./bench/preflop-table.bin')
+                .then(r => r.ok ? r.arrayBuffer() : Promise.reject(new Error('HTTP ' + r.status)))
+                .then(buf => { bitval.loadPreflopTable(buf); console.log('Preflop table loaded (' + (buf.byteLength / 1048576).toFixed(2) + ' MB, exact preflop enabled)'); })
+                .catch(e => console.warn('Preflop table not loaded; preflop uses Monte Carlo:', e.message));
+
             try {
                 RangeManagerClass = await loadRangeManager();
             } catch (e) {
