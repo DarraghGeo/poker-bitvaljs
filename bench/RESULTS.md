@@ -16,7 +16,7 @@ will amplify BigInt-related differences.
 | branch | narrow-monotone | narrow-rainbow | narrow-twotone | wide-238×238 | preflop-mc |
 |---|---|---|---|---|---|
 | `main` (v1.2.1, string key) — **baseline** | 92 | 57 | 94 | 3373 | 6681 |
-| `opt/1-remove` | _tbd_ | | | | |
+| `opt/1-remove` | **67** | **45** | **72** | **2943** | **4633** |
 | `opt/1-numeric-cap` | _tbd_ | | | | |
 | `opt/3-worker-pool` | _tbd_ | | | | |
 | `opt/4-number-evaluator` | _tbd_ | | | | |

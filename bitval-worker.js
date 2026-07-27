@@ -100,9 +100,10 @@ self.onmessage = async function(e) {
     // Deserialize setup
     const setup = deserializeSetup(setupData);
     
-    // Create BitVal instance and cache for this worker (reused for all matchups)
+    // Create BitVal instance for this worker (reused for all matchups).
+    // Per-eval cache removed (see BitVal._getCachedEvaluation); grouping does the work.
     const bitval = new BitVal();
-    const evalCache = new FastestAutoClearingCache(16000000);
+    const evalCache = null;
     
     const results = [];
     

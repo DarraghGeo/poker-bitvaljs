@@ -13,46 +13,6 @@ class XorShift32 {
   }
 }
 
-/**
- * Fastest auto-clearing cache with minimal overhead.
- * Uses bitwise counter check to avoid expensive modulo operations.
- */
-class FastestAutoClearingCache {
-  constructor(maxSize = 16000000) {
-    this.maxSize = maxSize;
-    this.clearThreshold = Math.floor(maxSize * 0.95); // Clear at 95% capacity
-    this.cache = new Map();
-    this.counter = 0;
-  }
-  
-  has(key) {
-    return this.cache.has(key); // No overhead on hot path
-  }
-  
-  get(key) {
-    return this.cache.get(key); // No overhead on hot path
-  }
-  
-  set(key, value) {
-    // Bitwise check is faster than modulo - check every ~1 million operations
-    // 0xFFFFF = 1,048,576 (2^20)
-    if ((++this.counter & 0xFFFFF) === 0) {
-      if (this.cache.size >= this.clearThreshold) {
-        this.cache.clear();
-      }
-    }
-    this.cache.set(key, value);
-  }
-  
-  clear() {
-    this.cache.clear();
-  }
-  
-  get size() {
-    return this.cache.size;
-  }
-}
-
 class BitVal {
   constructor() {
     // Suit constants
@@ -932,7 +892,6 @@ class BitVal {
    */
   async _compareRangeOptimizedSequential(setup, progressCallback = null, progressInterval = 100) {
     let win = 0, tie = 0, lose = 0;
-    const evalCache = new FastestAutoClearingCache(16000000);
     let lastProgressTime = 0;
     const progressUpdateInterval = 100; // Update progress at most every 100ms
     
@@ -979,12 +938,12 @@ class BitVal {
       const validCount = group.count;
       const validPair = group.representative;
       
-      const cache = { 
-        heroKey: group.heroKey, 
-        heroHand: validPair.heroHand, 
-        villainKey: group.villainKey, 
-        villainHand: validPair.villainHand, 
-        cache: evalCache 
+      const cache = {
+        heroKey: group.heroKey,
+        heroHand: validPair.heroHand,
+        villainKey: group.villainKey,
+        villainHand: validPair.villainHand,
+        cache: null
       };
       
       const { matchupWin, matchupTie, matchupLose } = await this._evaluateMatchup(
@@ -1204,33 +1163,19 @@ class BitVal {
   }
 
   /**
-   * Generates a collision-free cache key from canonical key, board and dead mask.
+   * Evaluates the representative hand for a canonical group on a given board.
    *
-   * NOTE: this returns a string. An earlier version returned a 32-bit numeric hash
-   * built from only the LOW 32 bits of the board (`board & 0xFFFFFFFFn`). Card ranks
-   * Nine and above live at bit 32+, so that truncation discarded every high card and
-   * collapsed distinct runouts onto a single cache entry. On suit-critical boards the
-   * first-evaluated runout's result was then reused for the rest, systematically
-   * undercounting flushes and overstating equity. Encoding the full BigInts as a
-   * string makes the key lossless, so the cache never returns a wrong hand's result.
-   * @private
-   */
-  _getCacheKeyHash(canonicalKey, board, matchupDeadMask = 0n) {
-    return canonicalKey + '|' + board.toString(36) + '|' + matchupDeadMask.toString(36);
-  }
-
-  /**
-   * Gets cached evaluation or evaluates and caches the result.
-   * Uses numeric hash keys for faster cache lookups.
+   * The per-evaluation memoization cache was removed here. Canonical grouping
+   * (in _compareRangeOptimized*) already collapses the redundant matchups; the
+   * extra cache had only a 2-6% hit rate, cost more time than it saved, and
+   * held up to 16M Map entries (a mobile-memory hazard). The `evalCache` and
+   * `matchupDeadMask` parameters are retained for call-site compatibility but
+   * are unused.
    * @private
    */
   _getCachedEvaluation(canonicalKey, originalHand, completeBoard, evalCache, matchupDeadMask = 0n) {
-    const cacheKey = this._getCacheKeyHash(canonicalKey, completeBoard, matchupDeadMask);
-    if (evalCache.has(cacheKey)) return evalCache.get(cacheKey);
     const handMask = this.getBitMasked(this._handStringToCards(originalHand));
-    const evaluation = this.evaluate(handMask | completeBoard);
-    evalCache.set(cacheKey, evaluation);
-    return evaluation;
+    return this.evaluate(handMask | completeBoard);
   }
 
   /**
