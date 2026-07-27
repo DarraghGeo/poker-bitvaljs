@@ -156,25 +156,6 @@ class BitVal {
       this.CARD_SUITS[card] = sr;
       this._MASK_TO_SUIT.set(this.CARD_MASKS[card], sr);
     }
-
-    // 13-bit rank-mask lookup tables for the fast evaluator. Each is 8192
-    // entries (~8-16 KB total), built once here, cache-resident at runtime.
-    // _POPC13[m]     = number of set bits (suit length / rank count).
-    // _STRAIGHT13[m] = top rank (4..12) of the best straight, 3 for the wheel,
-    //                  or -1 for none. Replaces the per-eval straight scan loop.
-    this._POPC13 = new Uint8Array(8192);
-    this._STRAIGHT13 = new Int8Array(8192);
-    for (let m = 0; m < 8192; m++) {
-      let c = 0, x = m;
-      while (x) { x &= x - 1; c++; }
-      this._POPC13[m] = c;
-      let run = 0, top = -1;
-      for (let r = 12; r >= 0; r--) {
-        if (m & (1 << r)) { if (++run >= 5) { top = r + 4; break; } } else run = 0;
-      }
-      if (top < 0 && (m & (1 << 12)) && (m & 0b1111) === 0b1111) top = 3; // wheel
-      this._STRAIGHT13[m] = top;
-    }
   }
 
   // ============================================
@@ -241,7 +222,12 @@ class BitVal {
    * Population count of a 13-bit rank mask.
    * @private
    */
-  _popc(m) { return this._POPC13[m]; }
+  _popc(m) {
+    m = m - ((m >> 1) & 0x1555);
+    m = (m & 0x1333) + ((m >> 2) & 0x1333);
+    m = (m + (m >> 4)) & 0x0f0f;
+    return (m + (m >> 8)) & 0x1f;
+  }
 
   /**
    * Index (0..12) of the highest set bit of a non-zero 13-bit rank mask.
@@ -254,7 +240,14 @@ class BitVal {
    * Handles the A-2-3-4-5 wheel (returns 3, i.e. a five-high straight).
    * @private
    */
-  _straightTop(m) { return this._STRAIGHT13[m]; }
+  _straightTop(m) {
+    let run = 0;
+    for (let r = 12; r >= 0; r--) {
+      if (m & (1 << r)) { if (++run >= 5) return r + 4; } else run = 0;
+    }
+    if ((m & (1 << 12)) && (m & 0b1111) === 0b1111) return 3; // wheel
+    return -1;
+  }
 
   /**
    * Builds the four 13-bit suit rank masks for an array of card strings.
@@ -303,18 +296,17 @@ class BitVal {
    */
   _eval7(s, h, d, c) {
     const all = s | h | d | c;
-    const POPC = this._POPC13, STR = this._STRAIGHT13;
 
     // Flush suit (>=5 of one suit), reused for straight-flush and flush.
     let fm = 0;
-    if (POPC[s] >= 5) fm = s;
-    else if (POPC[h] >= 5) fm = h;
-    else if (POPC[d] >= 5) fm = d;
-    else if (POPC[c] >= 5) fm = c;
+    if (this._popc(s) >= 5) fm = s;
+    else if (this._popc(h) >= 5) fm = h;
+    else if (this._popc(d) >= 5) fm = d;
+    else if (this._popc(c) >= 5) fm = c;
 
     // Straight flush
     if (fm) {
-      const t = STR[fm];
+      const t = this._straightTop(fm);
       if (t >= 0) return 8 * 1048576 + t * 65536;
     }
 
@@ -349,7 +341,7 @@ class BitVal {
 
     // Straight
     {
-      const t = STR[all];
+      const t = this._straightTop(all);
       if (t >= 0) return 4 * 1048576 + t * 65536;
     }
 
