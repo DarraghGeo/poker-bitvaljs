@@ -71,6 +71,11 @@ async function evaluateMatchupInWorker(heroMask, villainMask, setup, evalCache, 
     poolLen = pool.length;
   }
 
+  // Monte Carlo early-stop (mirrors BitVal._evaluateMatchup).
+  const mcTarget = setup.isExhaustive ? 0 : (setup.mcTarget > 0 ? setup.mcTarget / 100 : 0);
+  const reqIters = iterations;
+  let ran = iterations;
+
   // Main evaluation loop
   for (let i = 0; i < iterations; i++) {
     let d0, d1, d2, d3;
@@ -94,6 +99,16 @@ async function evaluateMatchupInWorker(heroMask, villainMask, setup, evalCache, 
     if (hE > vE) win++;
     else if (vE > hE) lose++;
     else tie++;
+
+    if (mcTarget && (i & 4095) === 4095 && i >= 8191) {
+      const n = i + 1, p = (win + tie * 0.5) / n;
+      if (1.96 * Math.sqrt(p * (1 - p) / n) < mcTarget) { ran = n; break; }
+    }
+  }
+
+  if (ran < reqIters && ran > 0) {
+    const s = reqIters / ran;
+    win = Math.round(win * s); tie = Math.round(tie * s); lose = Math.round(lose * s);
   }
 
   return { matchupWin: win, matchupTie: tie, matchupLose: lose };

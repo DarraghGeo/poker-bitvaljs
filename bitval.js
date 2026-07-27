@@ -540,9 +540,13 @@ class BitVal {
    * @param {Function} progressCallback - Optional progress callback (current, total, message)
    * @param {Number} progressInterval - Update progress every N matchups (default: 100)
    * @param {Boolean} useWorkers - Use Web Workers for parallelization (default: true)
+   * @param {Number} mcTargetPct - Monte Carlo early-stop target: stop sampling a
+   *   matchup once its 95% CI half-width is within this many equity percentage
+   *   points (default: 0.3). Pass 0 to force the full `iterations`. Only affects
+   *   Monte Carlo (preflop); the exact flop/turn and preflop-table paths ignore it.
    * @returns {Promise<Object>} { win, tie, lose } - Results object
    */
-  async compareRange(heroHands, villainHands, boardCards = [], deadCards = [], numberOfBoardCards = 5, iterations = 10000, optimize = true, progressCallback = null, progressInterval = 100, useWorkers = true) {
+  async compareRange(heroHands, villainHands, boardCards = [], deadCards = [], numberOfBoardCards = 5, iterations = 10000, optimize = true, progressCallback = null, progressInterval = 100, useWorkers = true, mcTargetPct = 0.3) {
     // Preflop exact fast path: if the preflop equity table is loaded and this is
     // a full-board preflop query with no dead cards, look up every matchup's
     // exact equity instead of Monte Carlo. Instant and exact.
@@ -552,6 +556,11 @@ class BitVal {
       return r;
     }
     const setup = this._compareRangeSetup(heroHands, villainHands, boardCards, deadCards, numberOfBoardCards, iterations, optimize);
+    // Monte Carlo early-stop target (95% CI half-width, in equity percentage
+    // points). Default on; pass 0 to force full `iterations`. Ignored by the
+    // exact (exhaustive) path. Only affects the remaining MC case (preflop with
+    // dead cards, or preflop with no table loaded).
+    setup.mcTarget = mcTargetPct;
     return optimize ? await this._compareRangeOptimized(setup, progressCallback, progressInterval, useWorkers) : await this._compareRangeUnoptimized(heroHands, villainHands, setup, progressCallback, progressInterval);
   }
 
@@ -988,7 +997,8 @@ class BitVal {
       numberOfBoardCards: setup.numberOfBoardCards,
       iterations: setup.iterations,
       isExhaustive: setup.isExhaustive,
-      numberOfCardsToDeal: setup.numberOfCardsToDeal
+      numberOfCardsToDeal: setup.numberOfCardsToDeal,
+      mcTarget: setup.mcTarget
       // Note: hCanon, vCanon, validMatchups, validCounts are not needed in workers
       // as matchups are pre-serialized and sent separately
     };
@@ -1076,6 +1086,13 @@ class BitVal {
     let lastProgressTime = 0;
     const progressUpdateInterval = 100; // Update progress at most every 100ms
 
+    // Monte Carlo early-stop: stop once this matchup's 95% CI half-width is
+    // within the target (lopsided matchups converge fast). Never exceeds the
+    // requested iterations; disabled for exact enumeration and when mcTarget<=0.
+    const mcTarget = setup.isExhaustive ? 0 : (setup.mcTarget > 0 ? setup.mcTarget / 100 : 0);
+    const reqIters = iterations;
+    let ran = iterations;
+
     for (let i = 0; i < iterations; i++) {
       // Build the runout as suit rank-masks: precomputed combo (exhaustive) or
       // a Fisher-Yates draw from the available pool (Monte Carlo).
@@ -1101,6 +1118,12 @@ class BitVal {
       if (hE > vE) win++;
       else if (vE > hE) lose++;
       else tie++;
+
+      // Monte Carlo early-stop check (every 4096 draws, past a warm-up).
+      if (mcTarget && (i & 4095) === 4095 && i >= 8191) {
+        const n = i + 1, p = (win + tie * 0.5) / n;
+        if (1.96 * Math.sqrt(p * (1 - p) / n) < mcTarget) { ran = n; break; }
+      }
 
       // Adaptive yielding: less frequent but still maintains UI responsiveness
       if (progressCallback && i > 0 && i % yieldInterval === 0) {
@@ -1141,7 +1164,15 @@ class BitVal {
         }
       }
     }
-    
+
+    // If early-stopped, scale counts back to the requested iteration count so
+    // the aggregate (which sums raw counts across matchups) weights every
+    // matchup equally regardless of how early it converged.
+    if (ran < reqIters && ran > 0) {
+      const s = reqIters / ran;
+      win = Math.round(win * s); tie = Math.round(tie * s); lose = Math.round(lose * s);
+    }
+
     return { matchupWin: win, matchupTie: tie, matchupLose: lose };
   }
 
