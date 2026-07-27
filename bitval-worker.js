@@ -56,16 +56,16 @@ async function evaluateMatchupInWorker(heroMask, villainMask, setup, evalCache, 
   const vs0 = villainSuits[0], vs1 = villainSuits[1], vs2 = villainSuits[2], vs3 = villainSuits[3];
   const bb0 = boardBaseSuits[0], bb1 = boardBaseSuits[1], bb2 = boardBaseSuits[2], bb3 = boardBaseSuits[3];
 
-  let comboSuits = null;
-  let pool = null, poolLen = 0;
+  let comboSuits = null;              // flat Int32Array, 4 entries per combo
+  let pool = null, poolLen = 0;       // packed Int32Array of available cards
   const nDeal = setup.numberOfCardsToDeal;
   if (setup.isExhaustive) {
     // Use comboArray from setup if available, otherwise compute it.
     let comboArray = (setup.comboArray && setup.comboArray.length > 0)
       ? setup.comboArray
       : bitval._getCombinations(bitval._getAvailableCardMasksByLookUp(deadMask), nDeal);
-    comboSuits = comboArray.map(m => bitval._suitsFromBigMask(m));
-    iterations = comboSuits.length;
+    comboSuits = bitval._buildComboSuits(comboArray);
+    iterations = comboSuits.length >> 2;
   } else {
     pool = bitval._availableSuitCards(deadMask);
     poolLen = pool.length;
@@ -75,18 +75,18 @@ async function evaluateMatchupInWorker(heroMask, villainMask, setup, evalCache, 
   for (let i = 0; i < iterations; i++) {
     let d0, d1, d2, d3;
     if (comboSuits) {
-      const cs = comboSuits[i];
-      d0 = bb0 | cs[0]; d1 = bb1 | cs[1]; d2 = bb2 | cs[2]; d3 = bb3 | cs[3];
+      const b = i << 2;
+      d0 = bb0 | comboSuits[b]; d1 = bb1 | comboSuits[b + 1]; d2 = bb2 | comboSuits[b + 2]; d3 = bb3 | comboSuits[b + 3];
     } else {
       d0 = bb0; d1 = bb1; d2 = bb2; d3 = bb3;
       for (let kk = 0; kk < nDeal; kk++) {
         const j = kk + bitval.xorShift.next(poolLen - kk);
         const tmp = pool[kk]; pool[kk] = pool[j]; pool[j] = tmp;
-        const sr = pool[kk];
-        if (sr.suit === 0) d0 |= sr.bit;
-        else if (sr.suit === 1) d1 |= sr.bit;
-        else if (sr.suit === 2) d2 |= sr.bit;
-        else d3 |= sr.bit;
+        const p = pool[kk], bit = p & 0xFFFF, suit = p >> 16;
+        if (suit === 0) d0 |= bit;
+        else if (suit === 1) d1 |= bit;
+        else if (suit === 2) d2 |= bit;
+        else d3 |= bit;
       }
     }
     const hE = bitval._eval7(hs0 | d0, hs1 | d1, hs2 | d2, hs3 | d3);

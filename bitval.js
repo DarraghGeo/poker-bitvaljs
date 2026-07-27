@@ -290,7 +290,23 @@ class BitVal {
   _availableSuitCards(deadMask) {
     const out = [];
     for (const [mask, sr] of this._MASK_TO_SUIT) {
-      if ((deadMask & mask) === 0n) out.push(sr);
+      if ((deadMask & mask) === 0n) out.push((sr.suit << 16) | sr.bit);
+    }
+    return Int32Array.from(out); // packed: suit in bits 16-17, rank bit in low 13
+  }
+
+  /**
+   * Flattens a BigInt combo array into a single Int32Array of suit rank masks
+   * (4 entries per combo: s, h, d, c). One contiguous buffer instead of N small
+   * arrays — better cache locality, no per-combo GC. Cached on `setup`.
+   * @private
+   */
+  _buildComboSuits(comboArray) {
+    const out = new Int32Array(comboArray.length * 4);
+    for (let i = 0; i < comboArray.length; i++) {
+      const s = this._suitsFromBigMask(comboArray[i]);
+      const b = i * 4;
+      out[b] = s[0]; out[b + 1] = s[1]; out[b + 2] = s[2]; out[b + 3] = s[3];
     }
     return out;
   }
@@ -962,14 +978,14 @@ class BitVal {
     const vs0 = villainSuits[0], vs1 = villainSuits[1], vs2 = villainSuits[2], vs3 = villainSuits[3];
     const bb0 = boardBaseSuits[0], bb1 = boardBaseSuits[1], bb2 = boardBaseSuits[2], bb3 = boardBaseSuits[3];
 
-    let comboSuits = null;
-    let pool = null, poolLen = 0;
+    let comboSuits = null;              // flat Int32Array, 4 entries per combo
+    let pool = null, poolLen = 0;       // packed Int32Array of available cards
     const nDeal = setup.numberOfCardsToDeal;
     if (setup.isExhaustive) {
-      comboSuits = setup._comboSuits || (setup._comboSuits = setup.comboArray.map(m => this._suitsFromBigMask(m)));
-      iterations = comboSuits.length;
+      comboSuits = setup._comboSuits || (setup._comboSuits = this._buildComboSuits(setup.comboArray));
+      iterations = comboSuits.length >> 2;
     } else {
-      pool = this._availableSuitCards(deadMask); // {suit,bit}[] not in dead cards
+      pool = this._availableSuitCards(deadMask);
       poolLen = pool.length;
     }
 
@@ -983,18 +999,18 @@ class BitVal {
       // a Fisher-Yates draw from the available pool (Monte Carlo).
       let d0, d1, d2, d3;
       if (comboSuits) {
-        const cs = comboSuits[i];
-        d0 = bb0 | cs[0]; d1 = bb1 | cs[1]; d2 = bb2 | cs[2]; d3 = bb3 | cs[3];
+        const b = i << 2;
+        d0 = bb0 | comboSuits[b]; d1 = bb1 | comboSuits[b + 1]; d2 = bb2 | comboSuits[b + 2]; d3 = bb3 | comboSuits[b + 3];
       } else {
         d0 = bb0; d1 = bb1; d2 = bb2; d3 = bb3;
         for (let k = 0; k < nDeal; k++) {
           const j = k + this.xorShift.next(poolLen - k);
           const tmp = pool[k]; pool[k] = pool[j]; pool[j] = tmp;
-          const sr = pool[k];
-          if (sr.suit === 0) d0 |= sr.bit;
-          else if (sr.suit === 1) d1 |= sr.bit;
-          else if (sr.suit === 2) d2 |= sr.bit;
-          else d3 |= sr.bit;
+          const p = pool[k], bit = p & 0xFFFF, suit = p >> 16;
+          if (suit === 0) d0 |= bit;
+          else if (suit === 1) d1 |= bit;
+          else if (suit === 2) d2 |= bit;
+          else d3 |= bit;
         }
       }
 
