@@ -1046,11 +1046,10 @@ class BitVal {
    * Optimized for browser performance with adaptive yielding and inlined hot loop.
    * @private
    */
-  async _evaluateMatchup(heroMask, villainMask, setup, evalCache = null, progressCallback = null, matchupIndex = 0, totalMatchups = 1) {
+  async _evaluateMatchup(heroMask, villainMask, setup, progressCallback = null, matchupIndex = 0, totalMatchups = 1) {
     let win = 0, tie = 0, lose = 0;
     const deadMask = heroMask | villainMask | setup.deadCardsMask;
-    const matchupDeadMask = heroMask | villainMask; // Only matchup-level dead cards (excludes setup.deadCardsMask)
-    
+
     // Initialize random number generator for Monte Carlo (not needed for exhaustive)
     if (!setup.isExhaustive) {
       this.xorShift = new XorShift32();
@@ -1188,7 +1187,7 @@ class BitVal {
     
     for (let i = 0; i < total; i++) {
       const { heroMask, villainMask } = setup.validMatchups[i];
-      const { matchupWin, matchupTie, matchupLose } = await this._evaluateMatchup(heroMask, villainMask, setup, null, progressCallback, i, total);
+      const { matchupWin, matchupTie, matchupLose } = await this._evaluateMatchup(heroMask, villainMask, setup, progressCallback, i, total);
       win += matchupWin; tie += matchupTie; lose += matchupLose;
       
       if (progressCallback && i % progressInterval === 0) {
@@ -1259,12 +1258,8 @@ class BitVal {
       for (const [key, group] of matchupGroups) {
         const validCount = group.count;
         const validPair = group.representative;
-        const cache = {
-          heroKey: group.heroKey, heroHand: validPair.heroHand,
-          villainKey: group.villainKey, villainHand: validPair.villainHand, cache: null
-        };
         const { matchupWin, matchupTie, matchupLose } = await this._evaluateMatchup(
-          validPair.heroMask, validPair.villainMask, setup, cache, progressCallback, matchupIndex, totalMatchups
+          validPair.heroMask, validPair.villainMask, setup, progressCallback, matchupIndex, totalMatchups
         );
         win += matchupWin * validCount;
         tie += matchupTie * validCount;
@@ -1583,22 +1578,6 @@ class BitVal {
       try { worker.terminate(); } catch (e) { /* ignore */ }
     }
     this._workerPool = null;
-  }
-
-  /**
-   * Evaluates the representative hand for a canonical group on a given board.
-   *
-   * The per-evaluation memoization cache was removed here. Canonical grouping
-   * (in _compareRangeOptimized*) already collapses the redundant matchups; the
-   * extra cache had only a 2-6% hit rate, cost more time than it saved, and
-   * held up to 16M Map entries (a mobile-memory hazard). The `evalCache` and
-   * `matchupDeadMask` parameters are retained for call-site compatibility but
-   * are unused.
-   * @private
-   */
-  _getCachedEvaluation(canonicalKey, originalHand, completeBoard, evalCache, matchupDeadMask = 0n) {
-    const handMask = this.getBitMasked(this._handStringToCards(originalHand));
-    return this.evaluate(handMask | completeBoard);
   }
 
   /**

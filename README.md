@@ -6,11 +6,15 @@ High-performance poker hand evaluator optimized for browser environments, using 
 
 ## Features
 
-- **Fast hand evaluation** using bitwise operations
-- **Range vs range equity calculations** with canonical key caching optimization
-- **Web Workers support** for parallel processing across multiple CPU cores (3-7x speedup)
-- **Monte Carlo simulation** for preflop and postflop scenarios
-- **Exhaustive enumeration** for flop/turn scenarios (2 or fewer cards to come)
+- **Fast hand evaluation** using four 13-bit suit lanes and plain 32-bit integers
+  (no BigInt in the hot path) — ~28–70× faster than the previous BigInt engine
+- **Exact range vs range equity** on the flop and turn via evaluate-once with
+  counting (byte-identical to brute force, no approximation)
+- **Exact, instant preflop** via an optional precomputed equity table
+  (`loadPreflopTable`) — replaces Monte Carlo entirely for preflop
+- **Monte Carlo** with confidence-interval early-stop for the remaining sampled
+  case (preflop with dead cards)
+- **Web Workers** for the Monte Carlo path
 - **Progress callbacks** with configurable update intervals
 - **Browser and Node.js compatible**
 
@@ -157,9 +161,9 @@ Simulates a single hand vs hand matchup.
 **Returns:**
 - `{ win, tie, lose }`: Results object
 
-### `compareRange(heroHands, villainHands, boardCards, deadCards, numberOfBoardCards, iterations, optimize, progressCallback, progressInterval, useWorkers)`
+### `compareRange(heroHands, villainHands, boardCards, deadCards, numberOfBoardCards, iterations, optimize, progressCallback, progressInterval, useWorkers, mcTargetPct)`
 
-Compares two ranges of hands with optional optimization and Web Workers parallelization.
+Compares two ranges of hands.
 
 **Parameters:**
 - `heroHands` (Array): Array of hero hand strings (e.g., `['AsAh', 'AsAd']`)
@@ -167,40 +171,57 @@ Compares two ranges of hands with optional optimization and Web Workers parallel
 - `boardCards` (Array): Board cards as strings (default: `[]`)
 - `deadCards` (Array): Dead cards as strings (default: `[]`)
 - `numberOfBoardCards` (Number): Total board cards (default: `5`)
-- `iterations` (Number): Number of simulations per matchup (default: `10000`)
-- `optimize` (Boolean): Use canonical key caching for performance (default: `true`). **Note:** Optimizations may result in a ±0.5% margin of error compared to unoptimized calculations.
+- `iterations` (Number): Monte Carlo samples per matchup (default: `10000`). Ignored on the flop/turn (exhaustive) and preflop-table paths, which are exact.
+- `optimize` (Boolean): Use the optimized path (default: `true`). On the flop/turn this is **exact** (byte-identical to `optimize: false`), just much faster.
 - `progressCallback` (Function): Optional callback `(current, total, message) => {}` (default: `null`)
 - `progressInterval` (Number): Update progress callback every N matchups (default: `100`)
-- `useWorkers` (Boolean): Use Web Workers for parallelization across CPU cores (default: `true`). Automatically falls back to sequential execution if workers are unavailable or workload is too small (< 4 matchups).
+- `useWorkers` (Boolean): Use Web Workers for the Monte Carlo path (default: `true`). The exact flop/turn path runs on the main thread.
+- `mcTargetPct` (Number): Monte Carlo early-stop target — stop sampling a matchup once its 95% confidence-interval half-width is within this many equity percentage points (default: `0.3`). Pass `0` to force the full `iterations`. Only affects the Monte Carlo (preflop) path.
 
 **Returns:**
 - `Promise<{ win, tie, lose }>`: Results object
 
-**Web Workers Notes:**
-- Web Workers provide 3-7x speedup on multi-core systems by parallelizing matchup evaluations
-- Workers are automatically disabled when:
-  - `useWorkers` is `false`
-  - Workers are not supported by the browser
-  - There are fewer than 4 matchups (overhead not worth it)
-- For local testing with `file://` protocol, use a local web server (see [Testing Locally](#testing-locally))
+### `loadPreflopTable(buffer)`
+
+Loads the precomputed exact preflop equity table and enables the preflop fast
+path in `compareRange` (empty board, no dead cards). Accepts an `ArrayBuffer`
+(browser) or Node `Buffer`. Generate the table with `npm run gen:preflop`.
+
+```javascript
+// Browser
+const buf = await (await fetch('./bench/preflop-table.bin')).arrayBuffer();
+bitval.loadPreflopTable(buf);
+
+// Node
+const fs = require('fs');
+bitval.loadPreflopTable(fs.readFileSync('bench/preflop-table.bin'));
+```
+
+Without a table loaded, preflop falls back to Monte Carlo — nothing else changes.
 
 ## Performance
 
-- **Optimized for browser environments** with efficient bitwise operations
-- **Web Workers parallelization** provides 3-7x speedup on multi-core systems
-- Canonical key caching reduces redundant evaluations (may introduce ±0.5% margin of error)
-- Exhaustive enumeration for flop/turn (2 or fewer cards to come)
-- Monte Carlo simulation for preflop and river scenarios
-- Adaptive progress reporting to minimize UI blocking
+- **No BigInt in the hot path** — cards are four 13-bit suit lanes evaluated with
+  plain 32-bit integer ops. ~28–70× faster than the previous BigInt engine.
+- **Flop/turn: exact and fast.** Each unique concrete hand is evaluated once per
+  runout; wide range-vs-range is resolved by counting. No ±0.5% approximation.
+- **Preflop: exact table lookup** (with `loadPreflopTable`) instead of Monte
+  Carlo — effectively instant.
+- **Monte Carlo** (only preflop with dead cards) uses confidence-interval
+  early-stop and Web Workers.
+
+Reproduce the benchmarks with `node bench/pre-vs-post.js` and `npm run bench`;
+correctness with `npm test` (and `npm run test:full` for the exhaustive proofs).
 
 **Test performance and benchmark online:** [https://darraghgeo.github.io/poker-bitvaljs/](https://darraghgeo.github.io/poker-bitvaljs/)
 
 ### Performance Tips
 
-- Enable Web Workers (default) for best performance on multi-core systems
-- Use canonical caching (`optimize: true`) for large range comparisons
-- Adjust `progressInterval` to balance UI responsiveness vs. performance
-- For very small workloads (< 4 matchups), workers are automatically disabled to avoid overhead
+- Call `loadPreflopTable` once at startup for exact, instant preflop equity.
+- Keep `optimize: true` (default) — on the flop/turn it is exact and much faster.
+- Lower `mcTargetPct` (or set `0`) for higher-precision Monte Carlo; raise it for
+  faster, looser preflop-with-dead-cards estimates.
+- Adjust `progressInterval` to balance UI responsiveness vs. performance.
 
 ## Testing Locally
 

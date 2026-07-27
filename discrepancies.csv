@@ -1,3 +1,0 @@
-hand_id,hero,villain,board,pass,failure_type,preflop_diff,max_flop_diff,max_turn_diff,max_river_diff,flop_count,turn_count,river_count,total_discrepancies
-228,Jc 6s,Kh 9d,,false,equity,0.45,0,0,0,0,0,0,1
-229,Jc 6s,Kh 9d,,false,equity,0.41,0,0,0,0,0,0,1

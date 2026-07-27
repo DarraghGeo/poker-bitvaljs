@@ -36,11 +36,10 @@ function deserializeMatchup(matchupData) {
  * Evaluates a single matchup in the worker context
  * Similar to _evaluateMatchup but without progress callbacks
  */
-async function evaluateMatchupInWorker(heroMask, villainMask, setup, evalCache, cacheInfo, bitval) {
+async function evaluateMatchupInWorker(heroMask, villainMask, setup, bitval) {
   let win = 0, tie = 0, lose = 0;
   const deadMask = heroMask | villainMask | setup.deadCardsMask;
-  const matchupDeadMask = heroMask | villainMask; // Only matchup-level dead cards (excludes setup.deadCardsMask)
-  
+
   // Initialize random number generator for Monte Carlo (not needed for exhaustive)
   if (!setup.isExhaustive) {
     bitval.xorShift = new XorShift32();
@@ -117,58 +116,18 @@ async function evaluateMatchupInWorker(heroMask, villainMask, setup, evalCache, 
 // Reused BitVal instance (holds the lookup tables; cheap to keep around).
 const _bitval = new BitVal();
 
-// Worker message handler
+// Worker message handler. Workers handle the Monte Carlo path only; the
+// exhaustive exact path runs on the main thread (see BitVal._compareRangeOptimized).
 self.onmessage = async function(e) {
   try {
-    // Exhaustive exact kernel over a runout slice (opt/7): run the SAME
-    // _runExhaustive as the main thread on [runStart, runEnd) and return the
-    // partial win/tie/lose. Keeps the worker path byte-identical to sequential.
-    if (e.data && e.data.exhaustive) {
-      const { work, comboSuits, runStart, runEnd } = e.data;
-      const result = _bitval._runExhaustive(work, comboSuits, runStart, runEnd);
-      self.postMessage({ success: true, result });
-      return;
-    }
-
     const { matchups, setupData, workerId } = e.data;
-
-    // Deserialize setup
     const setup = deserializeSetup(setupData);
-
-    // Create BitVal instance for this worker (reused for all matchups).
-    // Per-eval cache removed (see BitVal._getCachedEvaluation); grouping does the work.
-    const bitval = _bitval;
-    const evalCache = null;
-    
     const results = [];
-    
-    // Evaluate each matchup in the batch
+
     for (const matchupData of matchups) {
       const matchup = deserializeMatchup(matchupData);
-      
-      // Prepare cache info if available
-      const cacheInfo = matchup.heroKey ? {
-        heroKey: matchup.heroKey,
-        heroHand: matchup.heroHand,
-        villainKey: matchup.villainKey,
-        villainHand: matchup.villainHand
-      } : null;
-      
-      // Evaluate matchup
-      const result = await evaluateMatchupInWorker(
-        matchup.heroMask,
-        matchup.villainMask,
-        setup,
-        evalCache,
-        cacheInfo,
-        bitval
-      );
-      
-      results.push({
-        key: matchup.key,
-        validCount: matchup.validCount,
-        ...result
-      });
+      const result = await evaluateMatchupInWorker(matchup.heroMask, matchup.villainMask, setup, _bitval);
+      results.push({ key: matchup.key, validCount: matchup.validCount, ...result });
     }
     
     // Send results back to main thread
