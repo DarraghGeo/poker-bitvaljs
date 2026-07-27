@@ -15,20 +15,41 @@ will amplify BigInt-related differences.
 
 | branch | narrow-monotone | narrow-rainbow | narrow-twotone | wide-238×238 | preflop-mc |
 |---|---|---|---|---|---|
-| v1.2.1 (string key) — **baseline** | 92 | 57 | 94 | 3373 | 6681 |
-| **shipped: cache removed + worker pool** | **67** | **45** | **71** | **2957** | **4625** |
+| v1.2.1 (string key) — baseline | 92 | 57 | 94 | 3373 | 6681 |
+| cache removed + worker pool (v1.3.0) | 67 | 45 | 71 | 2957 | 4625 |
+| **opt/4 Number evaluator** | **2.4** | **~2** | **~2** | **108** | **255** (200k) |
 
-Shipped on `main` = `opt/1-remove` (drop per-eval cache) + `opt/3-worker-pool`
-(reuse workers). Single-threaded numbers reflect `opt/1-remove`; the worker pool
-only affects the multi-threaded browser path (see spawn-cost proxy below).
+Single-threaded, best-of-3. The Number evaluator replaces the BigInt hand
+evaluator and dealing in the hot loop (cards are four 13-bit suit rank masks;
+`_eval7` does the work with no BigInt, no allocation).
 
-### Evaluated but NOT shipped
+### opt/4 measured speedup vs the BigInt engine (in-process A/B)
 
-- `opt/1-numeric-cap` (numeric key + memory cap) — **discarded**: superseded by
-  removing the cache entirely, so there is no Map left to cap.
-- `opt/4-number-evaluator` — **spike only**, kept on its branch. Number evaluator
-  is order-equivalent to the BigInt one (0 mismatches / 300k pairs) and ~3.1×
-  faster on core eval; full integration deferred (see `bench/number-eval.js`).
+| scenario | Number engine | BigInt engine | speedup |
+|---|--:|--:|--:|
+| narrow-monotone (flop, exhaustive) | 2.4 ms | 65.2 ms | **26.6×** |
+| wide-238×238 (flop, exhaustive) | 107.9 ms | 2863.2 ms | **26.5×** |
+| preflop-mc (200k Monte Carlo) | 512.7 ms | 9034.7 ms | **17.6×** |
+
+Far above the earlier ~3× spike estimate: removing BigInt from the *entire*
+hot loop (board union + evaluation) eliminates per-op allocation/GC, not just
+arithmetic cost.
+
+### opt/4 correctness (see below for detail)
+
+- `_eval7` proven **order-equivalent** to the BigInt `evaluate()` over **all**
+  2,598,960 five-card hands and **all** 133,784,560 seven-card hands
+  (0 reversals, 0 non-SF merges; the only differences are 30 straight-flush
+  classes the old engine ranked by suit — poker-incorrect and unreachable in
+  head-to-head play).
+- End-to-end: **123,666,416** hand comparisons across 4,812 randomized
+  exhaustive scenarios (flops/turns, dead cards, wide ranges, both optimize
+  modes) — **0 mismatches** vs the reference BigInt engine.
+- Worker path validated in-browser: byte-identical to the sequential path.
+
+### Also evaluated but NOT shipped
+
+- `opt/1-numeric-cap` — **discarded**: superseded by removing the cache entirely.
 
 ## Worker pool (opt/3) — spawn-cost proxy
 
@@ -42,6 +63,20 @@ So the pool removes ~15–17 ms **per worker, per compareRange call** on this
 machine (browser/mobile typically higher). Meaningful on short interactive
 queries; negligible on multi-second runs. **Needs in-browser validation** — the
 worker execution path can't run under node.
+
+## Reproducing the opt/4 proofs
+
+```bash
+npm test                 # fast: correctness + determinism + 1M-hand equivalence
+npm run test:differential # 4,800+ exhaustive scenarios, exact vs BigInt engine (~2.5 min)
+npm run test:full         # ALL 133,784,560 7-card hands + differential (several min)
+```
+
+- `bench/eval-equivalence.js` — proves `_eval7` orders hands identically to the
+  BigInt `evaluate()` (oracle = the untouched `evaluate()` in the same file).
+- `bench/engine-differential.js` — proves the integrated engine equals the
+  frozen pre-opt/4 engine (`bench/bitval-reference.js`) on real `compareRange`
+  results.
 
 ## Correctness gate (optimize vs unoptimized, ±0.5pp)
 

@@ -143,19 +143,6 @@ class BitVal {
       4503599627370496n: 67553994410557455n,
       1n: 67553994410557455n
     };
-
-    // ---- BigInt-free fast path (Number evaluator) lookups ----
-    // Rank index 0..12 = 2..A; suit index 0..3. A card set is four 13-bit rank
-    // masks (one per suit); evaluation and set-union run entirely on Numbers.
-    this._N_RANK = { '2': 0, '3': 1, '4': 2, '5': 3, '6': 4, '7': 5, '8': 6, '9': 7, 'T': 8, 'J': 9, 'Q': 10, 'K': 11, 'A': 12 };
-    this._N_SUIT = { s: 0, h: 1, d: 2, c: 3 };
-    this.CARD_SUITS = {};                 // 'As' -> { suit, bit }
-    this._MASK_TO_SUIT = new Map();       // single-card BigInt mask -> { suit, bit }
-    for (const card in this.CARD_MASKS) {
-      const sr = { suit: this._N_SUIT[card[1]], bit: 1 << this._N_RANK[card[0]] };
-      this.CARD_SUITS[card] = sr;
-      this._MASK_TO_SUIT.set(this.CARD_MASKS[card], sr);
-    }
   }
 
   // ============================================
@@ -212,172 +199,6 @@ class BitVal {
     }
 
     return [this.stripBits(this.normalize(hand), 5), null];
-  }
-
-  // ============================================
-  // FAST PATH - BigInt-free (Number) evaluator
-  // ============================================
-
-  /**
-   * Population count of a 13-bit rank mask.
-   * @private
-   */
-  _popc(m) {
-    m = m - ((m >> 1) & 0x1555);
-    m = (m & 0x1333) + ((m >> 2) & 0x1333);
-    m = (m + (m >> 4)) & 0x0f0f;
-    return (m + (m >> 8)) & 0x1f;
-  }
-
-  /**
-   * Index (0..12) of the highest set bit of a non-zero 13-bit rank mask.
-   * @private
-   */
-  _high(m) { return 31 - Math.clz32(m); }
-
-  /**
-   * Top rank (4..12) of the best 5-card straight in a 13-bit rank mask, or -1.
-   * Handles the A-2-3-4-5 wheel (returns 3, i.e. a five-high straight).
-   * @private
-   */
-  _straightTop(m) {
-    let run = 0;
-    for (let r = 12; r >= 0; r--) {
-      if (m & (1 << r)) { if (++run >= 5) return r + 4; } else run = 0;
-    }
-    if ((m & (1 << 12)) && (m & 0b1111) === 0b1111) return 3; // wheel
-    return -1;
-  }
-
-  /**
-   * Builds the four 13-bit suit rank masks for an array of card strings.
-   * @private
-   */
-  _suitsOfCards(cards) {
-    const suits = [0, 0, 0, 0];
-    for (let i = 0; i < cards.length; i++) {
-      const sr = this.CARD_SUITS[cards[i]];
-      suits[sr.suit] |= sr.bit;
-    }
-    return suits;
-  }
-
-  /**
-   * Decomposes a BigInt card-set mask into four 13-bit suit rank masks.
-   * Used once per matchup / combo, never in the innermost loop.
-   * @private
-   */
-  _suitsFromBigMask(bigMask) {
-    const suits = [0, 0, 0, 0];
-    for (const [mask, sr] of this._MASK_TO_SUIT) {
-      if ((bigMask & mask) === mask) suits[sr.suit] |= sr.bit;
-    }
-    return suits;
-  }
-
-  /**
-   * Available cards (as {suit, bit}) not present in the given BigInt dead mask.
-   * Built once per matchup for the Monte Carlo dealing loop.
-   * @private
-   */
-  _availableSuitCards(deadMask) {
-    const out = [];
-    for (const [mask, sr] of this._MASK_TO_SUIT) {
-      if ((deadMask & mask) === 0n) out.push(sr);
-    }
-    return out;
-  }
-
-  /**
-   * Evaluates a 5-7 card hand given its four 13-bit suit rank masks and returns
-   * a single Number whose ordering is identical to `evaluate()` (score+kickers).
-   * Higher = stronger. No BigInt, no allocation.
-   * @private
-   */
-  _eval7(s, h, d, c) {
-    const all = s | h | d | c;
-
-    // Flush suit (>=5 of one suit), reused for straight-flush and flush.
-    let fm = 0;
-    if (this._popc(s) >= 5) fm = s;
-    else if (this._popc(h) >= 5) fm = h;
-    else if (this._popc(d) >= 5) fm = d;
-    else if (this._popc(c) >= 5) fm = c;
-
-    // Straight flush
-    if (fm) {
-      const t = this._straightTop(fm);
-      if (t >= 0) return 8 * 1048576 + t * 65536;
-    }
-
-    // Per-rank suit-count masks (exact via boolean suit combinations)
-    const four = s & h & d & c;
-    const threePlus = (s & h & d) | (s & h & c) | (s & d & c) | (h & d & c);
-    const twoPlus = (s & h) | (s & d) | (s & c) | (h & d) | (h & c) | (d & c);
-    const trips = threePlus & ~four;   // exactly three
-    const pairs = twoPlus & ~threePlus; // exactly two
-
-    // Quads
-    if (four) {
-      const q = this._high(four);
-      const k = this._high(all & ~(1 << q));
-      return 7 * 1048576 + q * 65536 + k * 4096;
-    }
-
-    // Full house (a trip plus another trip or a pair)
-    if (trips) {
-      const t1 = this._high(trips);
-      const restTrips = trips & ~(1 << t1);
-      const p = restTrips ? this._high(restTrips) : (pairs ? this._high(pairs) : -1);
-      if (p >= 0) return 6 * 1048576 + t1 * 65536 + p * 4096;
-    }
-
-    // Flush
-    if (fm) {
-      let m = fm, v = 5 * 1048576, shift = 65536;
-      for (let n = 0; n < 5; n++) { const r = this._high(m); v += r * shift; m &= ~(1 << r); shift >>= 4; }
-      return v;
-    }
-
-    // Straight
-    {
-      const t = this._straightTop(all);
-      if (t >= 0) return 4 * 1048576 + t * 65536;
-    }
-
-    // Trips
-    if (trips) {
-      const t = this._high(trips);
-      let rest = all & ~(1 << t);
-      const k1 = this._high(rest); rest &= ~(1 << k1);
-      const k2 = this._high(rest);
-      return 3 * 1048576 + t * 65536 + k1 * 4096 + k2 * 256;
-    }
-
-    // Two pair
-    if (pairs && (pairs & (pairs - 1))) {
-      const p1 = this._high(pairs);
-      const p2 = this._high(pairs & ~(1 << p1));
-      const k = this._high(all & ~(1 << p1) & ~(1 << p2));
-      return 2 * 1048576 + p1 * 65536 + p2 * 4096 + k * 256;
-    }
-
-    // One pair
-    if (pairs) {
-      const p = this._high(pairs);
-      let rest = all & ~(1 << p);
-      const k1 = this._high(rest); rest &= ~(1 << k1);
-      const k2 = this._high(rest); rest &= ~(1 << k2);
-      const k3 = this._high(rest);
-      return 1 * 1048576 + p * 65536 + k1 * 4096 + k2 * 256 + k3 * 16;
-    }
-
-    // High card
-    {
-      let m = all, v = 0, shift = 65536;
-      for (let n = 0; n < 5; n++) { const r = this._high(m); v += r * shift; m &= ~(1 << r); shift >>= 4; }
-      return v;
-    }
   }
 
   /**
@@ -940,62 +761,45 @@ class BitVal {
       this.xorShift = new XorShift32();
     }
     
-    // Prepare BigInt-free (Number) representations for the hot loop. The old
-    // path built a BigInt board and called the BigInt evaluate() twice per
-    // iteration; here cards are four 13-bit suit rank masks and _eval7 does the
-    // work with no BigInt and no allocation. The board suit-masks and the combo
-    // suit-masks are constant across matchups, so they're computed once and
-    // cached on `setup`.
+    // Prepare for exhaustive enumeration if applicable
+    let comboArray = null;
     let iterations = setup.iterations;
-    const heroSuits = this._suitsFromBigMask(heroMask);
-    const villainSuits = this._suitsFromBigMask(villainMask);
-    const boardBaseSuits = setup._boardSuits || (setup._boardSuits = this._suitsFromBigMask(setup.boardMask));
-    const hs0 = heroSuits[0], hs1 = heroSuits[1], hs2 = heroSuits[2], hs3 = heroSuits[3];
-    const vs0 = villainSuits[0], vs1 = villainSuits[1], vs2 = villainSuits[2], vs3 = villainSuits[3];
-    const bb0 = boardBaseSuits[0], bb1 = boardBaseSuits[1], bb2 = boardBaseSuits[2], bb3 = boardBaseSuits[3];
-
-    let comboSuits = null;
-    let pool = null, poolLen = 0;
-    const nDeal = setup.numberOfCardsToDeal;
     if (setup.isExhaustive) {
-      comboSuits = setup._comboSuits || (setup._comboSuits = setup.comboArray.map(m => this._suitsFromBigMask(m)));
-      iterations = comboSuits.length;
-    } else {
-      pool = this._availableSuitCards(deadMask); // {suit,bit}[] not in dead cards
-      poolLen = pool.length;
+      // Reuse pre-computed comboArray from setup (already computed in _compareRangeSetup)
+      comboArray = setup.comboArray;
+      iterations = comboArray.length;
     }
-
-    // Main evaluation loop - adaptive yielding for UI responsiveness
-    const yieldInterval = 5000;
+    
+    // Main evaluation loop - optimized with inlined functions and adaptive yielding
+    const yieldInterval = 5000; // Increased from 1000 - reduces async overhead while maintaining responsiveness
     let lastProgressTime = 0;
     const progressUpdateInterval = 100; // Update progress at most every 100ms
-
+    
     for (let i = 0; i < iterations; i++) {
-      // Build the runout as suit rank-masks: precomputed combo (exhaustive) or
-      // a Fisher-Yates draw from the available pool (Monte Carlo).
-      let d0, d1, d2, d3;
-      if (comboSuits) {
-        const cs = comboSuits[i];
-        d0 = bb0 | cs[0]; d1 = bb1 | cs[1]; d2 = bb2 | cs[2]; d3 = bb3 | cs[3];
+      // Generate board: use pre-computed combo for exhaustive, or deal randomly
+      const board = setup.isExhaustive 
+        ? setup.boardMask | comboArray[i]
+        : this.deal(setup.boardMask, deadMask, setup.numberOfCardsToDeal) | setup.boardMask;
+      
+      // Evaluate both hands - inlined for performance (no function call overhead)
+      let hEval, hKick, vEval, vKick;
+      if (evalCache) {
+        [hEval, hKick] = this._getCachedEvaluation(evalCache.heroKey, evalCache.heroHand, board, evalCache.cache, matchupDeadMask);
+        [vEval, vKick] = this._getCachedEvaluation(evalCache.villainKey, evalCache.villainHand, board, evalCache.cache, matchupDeadMask);
       } else {
-        d0 = bb0; d1 = bb1; d2 = bb2; d3 = bb3;
-        for (let k = 0; k < nDeal; k++) {
-          const j = k + this.xorShift.next(poolLen - k);
-          const tmp = pool[k]; pool[k] = pool[j]; pool[j] = tmp;
-          const sr = pool[k];
-          if (sr.suit === 0) d0 |= sr.bit;
-          else if (sr.suit === 1) d1 |= sr.bit;
-          else if (sr.suit === 2) d2 |= sr.bit;
-          else d3 |= sr.bit;
-        }
+        [hEval, hKick] = this.evaluate(heroMask | board);
+        [vEval, vKick] = this.evaluate(villainMask | board);
       }
-
-      const hE = this._eval7(hs0 | d0, hs1 | d1, hs2 | d2, hs3 | d3);
-      const vE = this._eval7(vs0 | d0, vs1 | d1, vs2 | d2, vs3 | d3);
-      if (hE > vE) win++;
-      else if (vE > hE) lose++;
-      else tie++;
-
+      
+      // Compare and accumulate results - inlined for performance
+      if (hEval > vEval || (hEval === vEval && hKick > vKick)) {
+        win++;
+      } else if (vEval > hEval || (vEval === hEval && vKick > hKick)) {
+        lose++;
+      } else {
+        tie++;
+      }
+      
       // Adaptive yielding: less frequent but still maintains UI responsiveness
       if (progressCallback && i > 0 && i % yieldInterval === 0) {
         const now = Date.now();

@@ -46,49 +46,56 @@ async function evaluateMatchupInWorker(heroMask, villainMask, setup, evalCache, 
     bitval.xorShift = new XorShift32();
   }
   
-  // Prepare for exhaustive enumeration if applicable
-  let comboArray = null;
+  // BigInt-free (Number) hot loop, mirroring BitVal._evaluateMatchup. Cards are
+  // four 13-bit suit rank masks; bitval._eval7 does the evaluation with no BigInt.
   let iterations = setup.iterations;
+  const heroSuits = bitval._suitsFromBigMask(heroMask);
+  const villainSuits = bitval._suitsFromBigMask(villainMask);
+  const boardBaseSuits = bitval._suitsFromBigMask(setup.boardMask);
+  const hs0 = heroSuits[0], hs1 = heroSuits[1], hs2 = heroSuits[2], hs3 = heroSuits[3];
+  const vs0 = villainSuits[0], vs1 = villainSuits[1], vs2 = villainSuits[2], vs3 = villainSuits[3];
+  const bb0 = boardBaseSuits[0], bb1 = boardBaseSuits[1], bb2 = boardBaseSuits[2], bb3 = boardBaseSuits[3];
+
+  let comboSuits = null;
+  let pool = null, poolLen = 0;
+  const nDeal = setup.numberOfCardsToDeal;
   if (setup.isExhaustive) {
-    // Use comboArray from setup if available, otherwise compute it
-    if (setup.comboArray && setup.comboArray.length > 0) {
-      comboArray = setup.comboArray;
-      iterations = comboArray.length;
-    } else {
-      // Compute comboArray if not provided
-      const availableMasks = bitval._getAvailableCardMasksByLookUp(deadMask);
-      comboArray = bitval._getCombinations(availableMasks, setup.numberOfCardsToDeal);
-      iterations = comboArray.length;
-    }
+    // Use comboArray from setup if available, otherwise compute it.
+    let comboArray = (setup.comboArray && setup.comboArray.length > 0)
+      ? setup.comboArray
+      : bitval._getCombinations(bitval._getAvailableCardMasksByLookUp(deadMask), nDeal);
+    comboSuits = comboArray.map(m => bitval._suitsFromBigMask(m));
+    iterations = comboSuits.length;
+  } else {
+    pool = bitval._availableSuitCards(deadMask);
+    poolLen = pool.length;
   }
-  
+
   // Main evaluation loop
   for (let i = 0; i < iterations; i++) {
-    // Generate board: use pre-computed combo for exhaustive, or deal randomly
-    const board = setup.isExhaustive 
-      ? setup.boardMask | comboArray[i]
-      : bitval.deal(setup.boardMask, deadMask, setup.numberOfCardsToDeal) | setup.boardMask;
-    
-    // Evaluate both hands
-    let hEval, hKick, vEval, vKick;
-    if (cacheInfo && evalCache) {
-      [hEval, hKick] = bitval._getCachedEvaluation(cacheInfo.heroKey, cacheInfo.heroHand, board, evalCache, matchupDeadMask);
-      [vEval, vKick] = bitval._getCachedEvaluation(cacheInfo.villainKey, cacheInfo.villainHand, board, evalCache, matchupDeadMask);
+    let d0, d1, d2, d3;
+    if (comboSuits) {
+      const cs = comboSuits[i];
+      d0 = bb0 | cs[0]; d1 = bb1 | cs[1]; d2 = bb2 | cs[2]; d3 = bb3 | cs[3];
     } else {
-      [hEval, hKick] = bitval.evaluate(heroMask | board);
-      [vEval, vKick] = bitval.evaluate(villainMask | board);
+      d0 = bb0; d1 = bb1; d2 = bb2; d3 = bb3;
+      for (let kk = 0; kk < nDeal; kk++) {
+        const j = kk + bitval.xorShift.next(poolLen - kk);
+        const tmp = pool[kk]; pool[kk] = pool[j]; pool[j] = tmp;
+        const sr = pool[kk];
+        if (sr.suit === 0) d0 |= sr.bit;
+        else if (sr.suit === 1) d1 |= sr.bit;
+        else if (sr.suit === 2) d2 |= sr.bit;
+        else d3 |= sr.bit;
+      }
     }
-    
-    // Compare and accumulate results
-    if (hEval > vEval || (hEval === vEval && hKick > vKick)) {
-      win++;
-    } else if (vEval > hEval || (vEval === hEval && vKick > hKick)) {
-      lose++;
-    } else {
-      tie++;
-    }
+    const hE = bitval._eval7(hs0 | d0, hs1 | d1, hs2 | d2, hs3 | d3);
+    const vE = bitval._eval7(vs0 | d0, vs1 | d1, vs2 | d2, vs3 | d3);
+    if (hE > vE) win++;
+    else if (vE > hE) lose++;
+    else tie++;
   }
-  
+
   return { matchupWin: win, matchupTie: tie, matchupLose: lose };
 }
 
