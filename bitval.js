@@ -1204,24 +1204,19 @@ class BitVal {
   }
 
   /**
-   * Generates a numeric hash key from canonical key and board for faster cache lookups.
+   * Generates a collision-free cache key from canonical key, board and dead mask.
+   *
+   * NOTE: this returns a string. An earlier version returned a 32-bit numeric hash
+   * built from only the LOW 32 bits of the board (`board & 0xFFFFFFFFn`). Card ranks
+   * Nine and above live at bit 32+, so that truncation discarded every high card and
+   * collapsed distinct runouts onto a single cache entry. On suit-critical boards the
+   * first-evaluated runout's result was then reused for the rest, systematically
+   * undercounting flushes and overstating equity. Encoding the full BigInts as a
+   * string makes the key lossless, so the cache never returns a wrong hand's result.
    * @private
    */
   _getCacheKeyHash(canonicalKey, board, matchupDeadMask = 0n) {
-    // Hash the canonical key string
-    let hash = 0;
-    for (let i = 0; i < canonicalKey.length; i++) {
-      hash = ((hash << 5) - hash) + canonicalKey.charCodeAt(i);
-      hash = hash & hash; // Convert to 32-bit integer
-    }
-    // Combine with board bits (use lower 32 bits of BigInt for fast XOR)
-    const boardBits = Number(board & 0xFFFFFFFFn);
-    hash = hash ^ boardBits;
-    
-    // Include matchup dead mask to prevent cross-matchup cache collisions
-    // This ensures different matchups (with different dead cards) don't share cache entries
-    const deadBits = Number(matchupDeadMask & 0xFFFFFFFFn);
-    return hash ^ deadBits;
+    return canonicalKey + '|' + board.toString(36) + '|' + matchupDeadMask.toString(36);
   }
 
   /**
