@@ -175,6 +175,11 @@ class BitVal {
       if (top < 0 && (m & (1 << 12)) && (m & 0b1111) === 0b1111) top = 3; // wheel
       this._STRAIGHT13[m] = top;
     }
+
+    // Preflop exact-equity table (loaded on demand via loadPreflopTable). The 24
+    // suit permutations canonicalize a matchup for lookup (card index = rank*4+suit).
+    this._pfMap = null; this._pfWin = null; this._pfTie = null; this._pfTotal = 0;
+    this._S4 = (function () { const p = a => a.length <= 1 ? [a] : a.flatMap((x, i) => p(a.slice(0, i).concat(a.slice(i + 1))).map(r => [x, ...r])); return p([0, 1, 2, 3]); })();
   }
 
   // ============================================
@@ -538,8 +543,85 @@ class BitVal {
    * @returns {Promise<Object>} { win, tie, lose } - Results object
    */
   async compareRange(heroHands, villainHands, boardCards = [], deadCards = [], numberOfBoardCards = 5, iterations = 10000, optimize = true, progressCallback = null, progressInterval = 100, useWorkers = true) {
+    // Preflop exact fast path: if the preflop equity table is loaded and this is
+    // a full-board preflop query with no dead cards, look up every matchup's
+    // exact equity instead of Monte Carlo. Instant and exact.
+    if (this._pfMap && boardCards.length === 0 && deadCards.length === 0 && numberOfBoardCards === 5) {
+      const r = this._compareRangePreflopExact(heroHands, villainHands);
+      if (progressCallback) progressCallback(1, 1, 'Complete');
+      return r;
+    }
     const setup = this._compareRangeSetup(heroHands, villainHands, boardCards, deadCards, numberOfBoardCards, iterations, optimize);
     return optimize ? await this._compareRangeOptimized(setup, progressCallback, progressInterval, useWorkers) : await this._compareRangeUnoptimized(heroHands, villainHands, setup, progressCallback, progressInterval);
+  }
+
+  /**
+   * Loads the exact preflop equity table (produced by bench/gen-preflop-table.js).
+   * Accepts an ArrayBuffer (browser fetch) or Node Buffer. Enables the preflop
+   * fast path in compareRange.
+   * @param {ArrayBuffer|Uint8Array|Buffer} buffer
+   * @returns {Number} number of canonical matchups loaded
+   */
+  loadPreflopTable(buffer) {
+    const ab = buffer instanceof ArrayBuffer ? buffer : buffer.buffer;
+    const off = buffer instanceof ArrayBuffer ? 0 : (buffer.byteOffset || 0);
+    const view = new DataView(ab, off, buffer.byteLength !== undefined ? buffer.byteLength : ab.byteLength);
+    if (view.getUint32(0, true) !== 0x50464551) throw new Error('invalid preflop table (bad magic)');
+    const count = view.getUint32(4, true);
+    this._pfTotal = view.getUint32(8, true);
+    this._pfWin = new Uint32Array(count);
+    this._pfTie = new Uint32Array(count);
+    this._pfMap = new Map();
+    for (let i = 0; i < count; i++) {
+      const o = 12 + i * 12;
+      this._pfMap.set(view.getUint32(o, true), i);
+      this._pfWin[i] = view.getUint32(o + 4, true);
+      this._pfTie[i] = view.getUint32(o + 8, true);
+    }
+    return count;
+  }
+
+  /** Card index (0..51) = rankIndex*4 + suitIndex, for a 2-char card string. @private */
+  _cardIndex(card) { return this._N_RANK[card[0]] * 4 + this._N_SUIT[card[1]]; }
+
+  /** Suit-isomorphic canonical key of a hero-vs-villain matchup (card indices). @private */
+  _preflopCanonKey(h1, h2, v1, v2) {
+    let best = Infinity;
+    const S4 = this._S4;
+    for (let pi = 0; pi < 24; pi++) {
+      const p = S4[pi];
+      const mh1 = (h1 & ~3) | p[h1 & 3], mh2 = (h2 & ~3) | p[h2 & 3];
+      const mv1 = (v1 & ~3) | p[v1 & 3], mv2 = (v2 & ~3) | p[v2 & 3];
+      const a = mh1 < mh2 ? mh1 : mh2, b = mh1 < mh2 ? mh2 : mh1;
+      const c = mv1 < mv2 ? mv1 : mv2, d = mv1 < mv2 ? mv2 : mv1;
+      const key = ((a * 52 + b) * 52 + c) * 52 + d;
+      if (key < best) best = key;
+    }
+    return best;
+  }
+
+  /**
+   * Exact preflop range-vs-range via the loaded table: sum each valid (hero,
+   * villain) matchup's exact win/tie/lose over all C(48,5) boards.
+   * @private
+   */
+  _compareRangePreflopExact(heroHands, villainHands) {
+    const total = this._pfTotal;
+    const heroC = [], villC = [];
+    for (const h of heroHands) heroC.push(this._cardIndex(h.slice(0, 2)), this._cardIndex(h.slice(2, 4)));
+    for (const v of villainHands) villC.push(this._cardIndex(v.slice(0, 2)), this._cardIndex(v.slice(2, 4)));
+    let win = 0, tie = 0, lose = 0;
+    for (let hi = 0; hi < heroC.length; hi += 2) {
+      const h1 = heroC[hi], h2 = heroC[hi + 1];
+      for (let vi = 0; vi < villC.length; vi += 2) {
+        const v1 = villC[vi], v2 = villC[vi + 1];
+        if (h1 === v1 || h1 === v2 || h2 === v1 || h2 === v2) continue; // conflicting hole cards
+        const idx = this._pfMap.get(this._preflopCanonKey(h1, h2, v1, v2));
+        const w = this._pfWin[idx], t = this._pfTie[idx];
+        win += w; tie += t; lose += total - w - t;
+      }
+    }
+    return { win, tie, lose };
   }
 
   // ============================================

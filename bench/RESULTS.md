@@ -45,6 +45,34 @@ Correctness: `bench/exact-optimize.js` — 0 mismatches over 600 randomized
 range-vs-range scenarios (76M comparisons); differential 4806 checks, 0 fails;
 evaluator equivalence over all 133.8M 7-card hands unchanged.
 
+## opt/5 #5 — exact preflop equity table
+
+Preflop (5 cards to come) is the only genuinely large sampling space and was the
+dominant single-query cost. It is now a table lookup instead of Monte Carlo.
+
+- `bench/gen-preflop-table.js` (+ `_preflop-worker.js`) generates, in parallel,
+  the exact (win, tie) counts over all C(48,5)=1,712,304 boards for each of the
+  **93,769** suit-isomorphic canonical matchups. ~27 min on 7 workers, one-time.
+- Output `bench/preflop-table.bin` — **1.07 MB** (canonical key + win + tie, u32
+  each). Compresses to well under 1 MB; lazy-loadable on mobile.
+- Runtime: `bv.loadPreflopTable(buffer)` enables a preflop fast path in
+  `compareRange` (empty board, no dead cards) that canonicalizes each matchup
+  and sums the table's exact counts. No table loaded ⇒ unchanged Monte Carlo.
+
+Measured:
+
+| squeeze-vs-wide preflop | equity | time |
+|---|--:|--:|
+| exact table | 60.699% | **4.3 ms** |
+| Monte Carlo (100k) | 60.864% (sampled) | 5433 ms |
+
+→ **~1277× faster and exact.** Validation (`bench/preflop-validate.js`,
+`npm run test:preflop`): 500 single-vs-single + 80 range-vs-range vs independent
+full enumeration, **0 mismatches**; all 93,769 keys resolvable.
+
+**Caveat:** exact only for preflop with no dead cards (table is over all C(48,5)
+runouts). Dead-card preflop falls back to the (faster) live engine.
+
 Single-threaded, best-of-3. The Number evaluator replaces the BigInt hand
 evaluator and dealing in the hot loop (cards are four 13-bit suit rank masks;
 `_eval7` does the work with no BigInt, no allocation).

@@ -9,6 +9,8 @@
     "test:equiv": "node bench/eval-equivalence.js",
     "test:exact": "node bench/exact-optimize.js",
     "test:differential": "node bench/engine-differential.js",
+    "test:preflop": "node bench/preflop-validate.js",
+    "gen:preflop": "node bench/gen-preflop-table.js --out bench/preflop-table.bin",
     "bench": "node bench/bench.js",
     "bench:correct": "node bench/correctness.js",
     "bench:determinism": "node bench/determinism.js"
