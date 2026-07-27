@@ -15,11 +15,20 @@ will amplify BigInt-related differences.
 
 | branch | narrow-monotone | narrow-rainbow | narrow-twotone | wide-238×238 | preflop-mc |
 |---|---|---|---|---|---|
-| `main` (v1.2.1, string key) — **baseline** | 92 | 57 | 94 | 3373 | 6681 |
-| `opt/1-remove` | **67** | **45** | **72** | **2943** | **4633** |
-| `opt/1-numeric-cap` | _tbd_ | | | | |
-| `opt/3-worker-pool` | n/a — worker path not exercised by the single-threaded harness | | | | |
-| `opt/4-number-evaluator` | _tbd_ | | | | |
+| v1.2.1 (string key) — **baseline** | 92 | 57 | 94 | 3373 | 6681 |
+| **shipped: cache removed + worker pool** | **67** | **45** | **71** | **2957** | **4625** |
+
+Shipped on `main` = `opt/1-remove` (drop per-eval cache) + `opt/3-worker-pool`
+(reuse workers). Single-threaded numbers reflect `opt/1-remove`; the worker pool
+only affects the multi-threaded browser path (see spawn-cost proxy below).
+
+### Evaluated but NOT shipped
+
+- `opt/1-numeric-cap` (numeric key + memory cap) — **discarded**: superseded by
+  removing the cache entirely, so there is no Map left to cap.
+- `opt/4-number-evaluator` — **spike only**, kept on its branch. Number evaluator
+  is order-equivalent to the BigInt one (0 mismatches / 300k pairs) and ~3.1×
+  faster on core eval; full integration deferred (see `bench/number-eval.js`).
 
 ## Worker pool (opt/3) — spawn-cost proxy
 
