@@ -1074,15 +1074,17 @@ class BitVal {
     for (let i = 0; i < matchupsToEvaluate.length; i += batchSize) {
       batches.push(matchupsToEvaluate.slice(i, i + batchSize));
     }
-    
+
     // Serialize setup for workers
     const serializedSetup = this._serializeSetup(setup);
-    
-    // Create workers and distribute work
-    const workers = [];
+
+    // Acquire persistent workers from the pool (created once, reused across calls).
+    // Previously a fresh Worker was spawned and terminated per compareRange call,
+    // paying thread-spawn + importScripts('./bitval.js') parse on every query.
+    const workers = this._acquireWorkers(batches.length);
     const promises = [];
     let completedMatchups = 0;
-    
+
     // Progress tracking
     let lastProgressTime = 0;
     const progressUpdateInterval = 100;
@@ -1093,44 +1095,48 @@ class BitVal {
         lastProgressTime = now;
       }
     }, progressUpdateInterval) : null;
-    
+
     for (let i = 0; i < batches.length; i++) {
-      const worker = new Worker('./bitval-worker.js');
-      workers.push(worker);
-      
+      const worker = workers[i];
+
       const promise = new Promise((resolve, reject) => {
+        // One-shot handlers per dispatch; cleared on settle so the pooled worker
+        // is clean for the next call. (Assumes compareRange calls don't overlap.)
+        const cleanup = () => { worker.onmessage = null; worker.onerror = null; };
         worker.onmessage = (e) => {
+          cleanup();
           if (e.data.success) {
             completedMatchups += e.data.results.length;
             resolve(e.data.results);
           } else {
             reject(new Error(e.data.error || 'Worker error'));
           }
-          worker.terminate();
         };
         worker.onerror = (error) => {
+          cleanup();
+          // A crashed worker can't be reused - drop it from the pool.
+          this._discardWorker(worker);
           reject(error);
-          worker.terminate();
         };
-        
+
         // Serialize matchups for this batch
         const serializedBatch = batches[i].map(m => this._serializeMatchup(m));
-        
+
         worker.postMessage({
           matchups: serializedBatch,
           setupData: serializedSetup,
           workerId: i
         });
       });
-      
+
       promises.push(promise);
     }
-    
+
     // Wait for all workers and aggregate results
     let win = 0, tie = 0, lose = 0;
     try {
       const allResults = await Promise.all(promises);
-      
+
       for (const batchResults of allResults) {
         for (const result of batchResults) {
           win += result.matchupWin * result.validCount;
@@ -1143,23 +1149,55 @@ class BitVal {
       if (progressIntervalId) {
         clearInterval(progressIntervalId);
       }
-      
-      // Ensure all workers are terminated
-      workers.forEach(worker => {
-        try {
-          worker.terminate();
-        } catch (e) {
-          // Ignore termination errors
-        }
-      });
-      
+
+      // Workers are NOT terminated - they stay in the pool for the next call.
+      // Callers can free them explicitly with terminateWorkerPool().
+
       // Final progress update
       if (progressCallback) {
         progressCallback(totalMatchups, totalMatchups, 'Complete');
       }
     }
-    
+
     return { win, tie, lose };
+  }
+
+  /**
+   * Returns `count` persistent workers, lazily growing the pool as needed.
+   * Reused across compareRange calls so thread-spawn + importScripts parse is
+   * paid once rather than per query.
+   * @private
+   */
+  _acquireWorkers(count) {
+    if (!this._workerPool) this._workerPool = [];
+    while (this._workerPool.length < count) {
+      this._workerPool.push(new Worker('./bitval-worker.js'));
+    }
+    return this._workerPool.slice(0, count);
+  }
+
+  /**
+   * Removes a (typically crashed) worker from the pool and terminates it.
+   * @private
+   */
+  _discardWorker(worker) {
+    if (this._workerPool) {
+      const idx = this._workerPool.indexOf(worker);
+      if (idx !== -1) this._workerPool.splice(idx, 1);
+    }
+    try { worker.terminate(); } catch (e) { /* ignore */ }
+  }
+
+  /**
+   * Terminates and clears the persistent worker pool. Call when done with an
+   * instance (e.g. on teardown) to free the worker threads.
+   */
+  terminateWorkerPool() {
+    if (!this._workerPool) return;
+    for (const worker of this._workerPool) {
+      try { worker.terminate(); } catch (e) { /* ignore */ }
+    }
+    this._workerPool = null;
   }
 
   /**
