@@ -1,5 +1,23 @@
 # Optimization benchmark results
 
+## Headline: shipped (v1.5.0) vs the pre-optimization BigInt engine
+
+`node bench/pre-vs-post.js` — shipped `bitval.js` vs `bench/bitval-reference.js`
+(the original BigInt evaluator), single-threaded, best-of-3, optimize=true:
+
+| scenario | pre (BigInt) | post (shipped) | speedup |
+|---|--:|--:|--:|
+| narrow flop (monotone) | 68 ms | 1.6 ms | **43×** |
+| narrow flop (rainbow) | 45 ms | 1.6 ms | **28×** |
+| narrow flop (two-tone) | 72 ms | 1.6 ms | **45×** |
+| wide 238×238 flop | 2964 ms | 43 ms | **69×** |
+| preflop (single vs range) | 4649 ms | 0.2 ms | **~29,500×** |
+
+Flop/turn also went from a ±0.5% approximation to **exact**; preflop went from
+Monte Carlo to an **exact table lookup**.
+
+---
+
 Reproduce on any branch:
 
 ```bash
