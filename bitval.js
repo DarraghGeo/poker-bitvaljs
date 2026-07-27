@@ -257,9 +257,13 @@ class BitVal {
 
     const availableCards = 52 - new Set(allDeadCards).size;
     const exhaustiveCombinations = this.combinations(availableCards, numberOfCardsToDeal);
-    iterations = Math.min(iterations, exhaustiveCombinations);
 
-    const isExhaustive = iterations === exhaustiveCombinations && numberOfCardsToDeal > 0 && numberOfCardsToDeal <= 2;
+    // For <=2 cards to come the full runout space is tiny (<=1326), so always
+    // enumerate it exactly instead of Monte-Carloing a low iteration count.
+    // Exhaustive is exact and deterministic; the iteration count only matters
+    // for larger (>=3 cards to come) scenarios.
+    const isExhaustive = numberOfCardsToDeal > 0 && numberOfCardsToDeal <= 2;
+    iterations = isExhaustive ? exhaustiveCombinations : Math.min(iterations, exhaustiveCombinations);
     let comboArray = null;
     if (isExhaustive) {
       const availableMasks = this._getAvailableCardMasksByLookUp(deadCards);
@@ -654,11 +658,15 @@ class BitVal {
     const availableCards = 52 - this.countBits(deadCardsMask);
     
     // Determine if we should use exhaustive enumeration
-    const exhaustiveCombinations = canBeExhaustive 
-      ? this.combinations(availableCards, numberOfCardsToDeal) 
+    const exhaustiveCombinations = canBeExhaustive
+      ? this.combinations(availableCards, numberOfCardsToDeal)
       : Infinity;
-    iterations = Math.min(iterations, exhaustiveCombinations);
-    const isExhaustive = canBeExhaustive && iterations === exhaustiveCombinations && exhaustiveCombinations < Infinity;
+    // For <=2 cards to come the full runout space is tiny (<=1326), so always
+    // enumerate it exactly instead of Monte-Carloing a lower requested count.
+    // Exhaustive is exact and deterministic; the requested iteration count only
+    // matters for larger (>=3 cards to come, e.g. preflop) scenarios.
+    const isExhaustive = canBeExhaustive && exhaustiveCombinations < Infinity;
+    iterations = isExhaustive ? exhaustiveCombinations : Math.min(iterations, exhaustiveCombinations);
     
     // Generate combo array only if exhaustive
     const comboArray = isExhaustive 
