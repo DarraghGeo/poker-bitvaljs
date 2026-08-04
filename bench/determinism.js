@@ -22,7 +22,7 @@ const eq = r => (r.win + r.tie / 2) / (r.win + r.tie + r.lose) * 100;
     console.log(`  ${cond ? 'PASS' : 'FAIL'}  ${label}${extra ? '  ' + extra : ''}`);
   };
 
-  for (const [name, board] of [['flop (2 to come)', ['Ad', '8d', '7d']], ['turn (1 to come)', ['Ad', '8d', '7d', '2s']]]) {
+  for (const [name, board] of [['flop (2 to come)', ['Ad', '8d', '7d']], ['turn (1 to come)', ['Ad', '8d', '7d', '2s']], ['river (0 to come)', ['Ad', '8d', '7d', '2s', 'Kc']]]) {
     console.log(`\n${name}, board ${board.join(' ')}`);
     // Low iteration counts that would previously trigger Monte Carlo:
     const low = [];

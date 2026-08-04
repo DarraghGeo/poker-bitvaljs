@@ -468,9 +468,10 @@ class BitVal {
 
     // For <=2 cards to come the full runout space is tiny (<=1326), so always
     // enumerate it exactly instead of Monte-Carloing a low iteration count.
+    // 0 cards to come (a complete board) is also exhaustive: exactly one runout.
     // Exhaustive is exact and deterministic; the iteration count only matters
     // for larger (>=3 cards to come) scenarios.
-    const isExhaustive = numberOfCardsToDeal > 0 && numberOfCardsToDeal <= 2;
+    const isExhaustive = numberOfCardsToDeal >= 0 && numberOfCardsToDeal <= 2;
     iterations = isExhaustive ? exhaustiveCombinations : Math.min(iterations, exhaustiveCombinations);
     let comboArray = null;
     if (isExhaustive) {
@@ -944,9 +945,10 @@ class BitVal {
     const boardMask = this.getBitMasked(boardCards);
     const deadCardsMask = this.getBitMasked([...boardCards, ...deadCards]);
     
-    // Calculate cards to deal and determine if exhaustive enumeration is possible
+    // Calculate cards to deal and determine if exhaustive enumeration is possible.
+    // 0 cards to come (a complete board) is exhaustive too: exactly one runout.
     const numberOfCardsToDeal = numberOfBoardCards - boardCards.length;
-    const canBeExhaustive = numberOfCardsToDeal > 0 && numberOfCardsToDeal <= 2;
+    const canBeExhaustive = numberOfCardsToDeal >= 0 && numberOfCardsToDeal <= 2;
     
     // Calculate available cards using bitmask (more efficient than Set)
     const availableCards = 52 - this.countBits(deadCardsMask);
@@ -1728,6 +1730,7 @@ class BitVal {
    * @private
    */
   _getCombinations(availableMasks, k) {
+    if (k === 0) return [0n]; // complete board: exactly one runout (the empty draw)
     if (k === 1) return availableMasks;
     if (k === 2) {
       let combos = [];
