@@ -202,11 +202,14 @@ Without a table loaded, preflop falls back to Monte Carlo — nothing else chang
 
 ### Shared-board Monte Carlo (opt-in)
 
-Monte Carlo is only used when the preflop table can't be (preflop with dead
-cards, or no table loaded). By default each matchup samples its own boards.
+Monte Carlo is used whenever 3 or more board cards are still to come and the
+preflop table can't answer: preflop with dead cards, preflop with no table
+loaded, or a partial board of 1–2 cards. By default each matchup samples its
+own boards.
 Setting `mcSharedBoards` samples boards once and evaluates every hand on each
 board, counting all valid pairs at once — typically 25–100× faster for
-range-vs-range, with no canonical-grouping approximation:
+range-vs-range (e.g. squeeze vs wide on a `Ks` board: ~79 s → ~80 ms), with
+no canonical-grouping approximation:
 
 ```javascript
 const bitval = new BitVal();
@@ -257,7 +260,8 @@ correctness with `npm test` (and `npm run test:full` for the exhaustive proofs).
 - Lower `mcTargetPct` (or set `0`) for higher-precision Monte Carlo; raise it for
   faster, looser preflop-with-dead-cards estimates.
 - Adjust `progressInterval` to balance UI responsiveness vs. performance.
-- For preflop with dead cards, set `bitval.mcSharedBoards = true` (see above).
+- For Monte Carlo cases (preflop with dead cards, or a 1–2 card board), set
+  `bitval.mcSharedBoards = true` (see above).
 - Web Workers load `bitval-worker.js` from next to `bitval.js` (resolved from
   the `<script>` tag's URL). If you bundle or relocate the files, set
   `bitval.workerUrl = '/path/to/bitval-worker.js'`. If workers can't start,
