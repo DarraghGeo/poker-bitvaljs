@@ -29,6 +29,12 @@ class XorShift32 {
 class BitVal {
   constructor() {
     this.workerUrl = _BITVAL_WORKER_URL;
+    // Opt-in Monte Carlo mode: sample boards once and evaluate every hand on
+    // each board (see _compareRangeSharedBoards). Off = per-matchup sampling.
+    this.mcSharedBoards = false;
+    // Exact flop/turn jobs at least this big (unique hands x runouts) are split
+    // across workers when workers are enabled.
+    this._EXACT_WORKER_THRESHOLD = 300000;
 
     // Suit constants
     this._DIAMOND = 3n;
@@ -214,7 +220,9 @@ class BitVal {
 
     // Preflop exact-equity table (loaded on demand via loadPreflopTable). The 24
     // suit permutations canonicalize a matchup for lookup (card index = rank*4+suit).
-    this._pfMap = null; this._pfWin = null; this._pfTie = null; this._pfTotal = 0;
+    // Lookup is an open-addressing hash in typed arrays (_pfKeys/_pfSlot).
+    this._pfSlot = null; this._pfKeys = null; this._pfMask = 0; this._pfShift = 0;
+    this._pfWin = null; this._pfTie = null; this._pfTotal = 0;
     this._S4 = (function () { const p = a => a.length <= 1 ? [a] : a.flatMap((x, i) => p(a.slice(0, i).concat(a.slice(i + 1))).map(r => [x, ...r])); return p([0, 1, 2, 3]); })();
   }
 
@@ -337,9 +345,37 @@ class BitVal {
   }
 
   /**
-   * Flattens a BigInt combo array into a single Int32Array of suit rank masks
-   * (4 entries per combo: s, h, d, c). One contiguous buffer instead of N small
-   * arrays — better cache locality, no per-combo GC. Cached on `setup`.
+   * All k-card runouts (k = 0..2) from the cards NOT in `exclude` (a {lo, hi}
+   * card bitset), as one flat Int32Array with 4 suit rank masks per runout
+   * (s, h, d, c) — the layout the exact kernel reads. Built from card indices
+   * directly (no BigInt).
+   * @private
+   */
+  _runoutSuits(exclude, k) {
+    const cards = [];
+    for (let c = 0; c < 52; c++) if (!(c < 32 ? exclude.lo & (1 << c) : exclude.hi & (1 << (c - 32)))) cards.push(c);
+    const n = cards.length;
+    if (k === 0) return new Int32Array(4);
+    if (k === 1) {
+      const out = new Int32Array(n * 4);
+      for (let i = 0; i < n; i++) out[i * 4 + (cards[i] & 3)] = 1 << (cards[i] >> 2);
+      return out;
+    }
+    const out = new Int32Array((n * (n - 1) / 2) * 4);
+    let o = 0;
+    for (let i = 0; i < n; i++) {
+      const ci = cards[i];
+      for (let j = i + 1; j < n; j++, o += 4) {
+        const cj = cards[j];
+        out[o + (ci & 3)] |= 1 << (ci >> 2);
+        out[o + (cj & 3)] |= 1 << (cj >> 2);
+      }
+    }
+    return out;
+  }
+
+  /**
+   * Converts BigInt runout masks to the 4-suit-masks-per-runout layout.
    * @private
    */
   _buildComboSuits(comboArray) {
@@ -514,7 +550,7 @@ class BitVal {
     let win = 0, tie = 0, lose = 0;
 
     if (isExhaustive) {
-      const combos = this._buildComboSuits(this._getCombinations(this._getAvailableCardMasksByLookUp(deadMask), numberOfCardsToDeal));
+      const combos = this._runoutSuits(this._cardsBitset(allDeadCards), numberOfCardsToDeal);
       const n = Math.min(iterations, combos.length >> 2);
       for (let i = 0; i < n; i++) {
         const b = i << 2, d0 = combos[b], d1 = combos[b + 1], d2 = combos[b + 2], d3 = combos[b + 3];
@@ -573,7 +609,7 @@ class BitVal {
     // Preflop exact fast path: if the preflop equity table is loaded and this is
     // a full-board preflop query with no dead cards, look up every matchup's
     // exact equity instead of Monte Carlo. Instant and exact.
-    if (this._pfMap && boardCards.length === 0 && deadCards.length === 0 && numberOfBoardCards === 5) {
+    if (this._pfSlot && boardCards.length === 0 && deadCards.length === 0 && numberOfBoardCards === 5) {
       const r = this._compareRangePreflopExact(heroHands, villainHands);
       if (progressCallback) progressCallback(1, 1, 'Complete');
       return r;
@@ -601,16 +637,32 @@ class BitVal {
     if (view.getUint32(0, true) !== 0x50464551) throw new Error('invalid preflop table (bad magic)');
     const count = view.getUint32(4, true);
     this._pfTotal = view.getUint32(8, true);
-    this._pfWin = new Uint32Array(count);
-    this._pfTie = new Uint32Array(count);
-    this._pfMap = new Map();
+    const win = new Uint32Array(count), tie = new Uint32Array(count);
+    // Open-addressing hash (linear probing, load factor <= 0.5): key -> row.
+    let bits = 1; while ((1 << bits) < count * 2) bits++;
+    const size = 1 << bits, mask = size - 1, shift = 32 - bits;
+    const keys = new Uint32Array(size), slot = new Int32Array(size).fill(-1);
     for (let i = 0; i < count; i++) {
-      const o = 12 + i * 12;
-      this._pfMap.set(view.getUint32(o, true), i);
-      this._pfWin[i] = view.getUint32(o + 4, true);
-      this._pfTie[i] = view.getUint32(o + 8, true);
+      const o = 12 + i * 12, key = view.getUint32(o, true);
+      win[i] = view.getUint32(o + 4, true);
+      tie[i] = view.getUint32(o + 8, true);
+      let h = Math.imul(key, 0x9E3779B1) >>> shift;
+      while (slot[h] !== -1) h = (h + 1) & mask;
+      keys[h] = key; slot[h] = i;
     }
+    this._pfWin = win; this._pfTie = tie;
+    this._pfKeys = keys; this._pfSlot = slot; this._pfMask = mask; this._pfShift = shift;
     return count;
+  }
+
+  /** Row index of a canonical preflop key in the loaded table, or -1. @private */
+  _pfLookup(key) {
+    const keys = this._pfKeys, slot = this._pfSlot, mask = this._pfMask;
+    let h = Math.imul(key, 0x9E3779B1) >>> this._pfShift;
+    for (let i = slot[h]; i !== -1; h = (h + 1) & mask, i = slot[h]) {
+      if (keys[h] === key) return i;
+    }
+    return -1;
   }
 
   /** Card index (0..51) = rankIndex*4 + suitIndex, for a 2-char card string. @private */
@@ -642,14 +694,39 @@ class BitVal {
     const heroC = [], villC = [];
     for (const h of heroHands) heroC.push(this._cardIndex(h.slice(0, 2)), this._cardIndex(h.slice(2, 4)));
     for (const v of villainHands) villC.push(this._cardIndex(v.slice(0, 2)), this._cardIndex(v.slice(2, 4)));
+    // The canonical key ((a*52+b)*52+c)*52+d is minimized over the 24 suit
+    // permutations; it's lexicographic in (hero part, villain part), so only
+    // the permutations that minimize the hero part can win (2 for offsuit or
+    // pairs, 6 for suited). Find those once per hero, then minimize the villain
+    // part over just them — same key as _preflopCanonKey, ~4-12x less work.
+    const S4 = this._S4, pWin = this._pfWin, pTie = this._pfTie;
+    const perms = new Int32Array(24 * 4); let np = 0;
     let win = 0, tie = 0, lose = 0;
     for (let hi = 0; hi < heroC.length; hi += 2) {
       const h1 = heroC[hi], h2 = heroC[hi + 1];
+      let bestH = Infinity; np = 0;
+      for (let pi = 0; pi < 24; pi++) {
+        const p = S4[pi];
+        const m1 = (h1 & ~3) | p[h1 & 3], m2 = (h2 & ~3) | p[h2 & 3];
+        const hk = m1 < m2 ? m1 * 52 + m2 : m2 * 52 + m1;
+        if (hk > bestH) continue;
+        if (hk < bestH) { bestH = hk; np = 0; }
+        perms[np * 4] = p[0]; perms[np * 4 + 1] = p[1]; perms[np * 4 + 2] = p[2]; perms[np * 4 + 3] = p[3]; np++;
+      }
+      const hBase = bestH * 2704;
       for (let vi = 0; vi < villC.length; vi += 2) {
         const v1 = villC[vi], v2 = villC[vi + 1];
         if (h1 === v1 || h1 === v2 || h2 === v1 || h2 === v2) continue; // conflicting hole cards
-        const idx = this._pfMap.get(this._preflopCanonKey(h1, h2, v1, v2));
-        const w = this._pfWin[idx], t = this._pfTie[idx];
+        let bestV = 2704;
+        const b1 = v1 & ~3, s1 = v1 & 3, b2 = v2 & ~3, s2 = v2 & 3;
+        for (let k = 0; k < np; k++) {
+          const q = k * 4, m1 = b1 | perms[q + s1], m2 = b2 | perms[q + s2];
+          const vk = m1 < m2 ? m1 * 52 + m2 : m2 * 52 + m1;
+          if (vk < bestV) bestV = vk;
+        }
+        const idx = this._pfLookup(hBase + bestV);
+        if (idx < 0) throw new Error('preflop table is missing a matchup (corrupt or incomplete table)');
+        const w = pWin[idx], t = pTie[idx];
         win += w; tie += t; lose += total - w - t;
       }
     }
@@ -982,14 +1059,11 @@ class BitVal {
     // enumerate it exactly instead of Monte-Carloing a lower requested count.
     // Exhaustive is exact and deterministic; the requested iteration count only
     // matters for larger (>=3 cards to come, e.g. preflop) scenarios.
-    if (isExhaustive) {
-      iterations = this.combinations(52 - this.countBits(deadCardsMask), numberOfCardsToDeal);
-    }
-
-    // Generate combo array only if exhaustive
-    const comboArray = isExhaustive
-      ? this._getCombinations(this._getAvailableCardMasksByLookUp(deadCardsMask), numberOfCardsToDeal)
+    // Runouts as suit masks, built from card indices (no BigInt).
+    const comboSuits = isExhaustive
+      ? this._runoutSuits(this._cardsBitset([...boardCards, ...deadCards]), numberOfCardsToDeal)
       : null;
+    if (isExhaustive) iterations = comboSuits.length >> 2;
 
     const self = this;
     return {
@@ -999,9 +1073,11 @@ class BitVal {
       deadCardsMask,
       iterations,
       isExhaustive,
-      comboArray,
+      comboArray: null,       // BigInt runouts are no longer built; see _comboSuits
+      _comboSuits: comboSuits,
       numberOfCardsToDeal,
       boardCards,
+      deadCards,
       numberOfBoardCards,
       _validMatchups: null,
       get validMatchups() {
@@ -1511,12 +1587,14 @@ class BitVal {
   }
 
   /**
-   * Exact exhaustive kernel over runouts [runStart, runEnd). Evaluates each
-   * unique concrete hand once per runout, then resolves matchups by direct
-   * comparison (small fields) or, for large fields, a single sort of the
-   * unique hands followed by a linear sweep over equal-value groups that keeps
-   * running villain counts in total and per hole card (to subtract villains
-   * sharing a card with the hero). Byte-identical to unoptimized.
+   * Exact exhaustive kernel over runouts [runStart, runEnd). Hands holding a
+   * card dealt in the runout are dropped for that runout; every other unique
+   * concrete hand is evaluated once. Matchups are then resolved by direct
+   * comparison (small fields) or, for large fields, a radix sort of the live
+   * hands by value followed by a linear sweep over equal-value groups that
+   * keeps running villain counts in total and per hole card (to subtract
+   * villains sharing a card with the hero). Byte-identical to unoptimized.
+   * `comboSuits` holds 4 suit rank masks per runout (any number of cards).
    * @private
    */
   _runExhaustive(work, comboSuits, runStart, runEnd) {
@@ -1528,17 +1606,17 @@ class BitVal {
     const cardTot = useCount ? new Int32Array(52) : null;
     let win = 0, tie = 0, lose = 0;
 
-    // Large-field scratch: sort keys (value*U + u, exact in a double) and
-    // per-card villain counts strictly below / equal to the current value.
-    const keys = useCount ? new Float64Array(U) : null;
+    // Large-field scratch: live hand list, radix-sort buffers and counters,
+    // and per-card villain counts strictly below / equal to the current value.
+    const live = useCount ? new Int32Array(U) : null;
+    const tmp = useCount ? new Int32Array(U) : null;
     const order = useCount ? new Int32Array(U) : null;
+    const cnt = useCount ? new Int32Array(3 * 257) : null;
     const lessC = useCount ? new Int32Array(52) : null;
     const eqC = useCount ? new Int32Array(52) : null;
 
     for (let i = runStart; i < runEnd; i++) {
       const b = i << 2;
-      const d0 = bb0 | comboSuits[b], d1 = bb1 | comboSuits[b + 1], d2 = bb2 | comboSuits[b + 2], d3 = bb3 | comboSuits[b + 3];
-      for (let u = 0; u < U; u++) { const q = u << 2; uVals[u] = this._eval7(uSuit[q] | d0, uSuit[q + 1] | d1, uSuit[q + 2] | d2, uSuit[q + 3] | d3); }
 
       // Mark hands holding a runout card; for counting, also remove those
       // villains from the field total and the per-card totals.
@@ -1558,6 +1636,14 @@ class BitVal {
         }
       }
 
+      // Evaluate the live hands only.
+      const d0 = bb0 | comboSuits[b], d1 = bb1 | comboSuits[b + 1], d2 = bb2 | comboSuits[b + 2], d3 = bb3 | comboSuits[b + 3];
+      for (let u = 0; u < U; u++) {
+        if (dead[u] === i) continue;
+        const q = u << 2;
+        uVals[u] = this._eval7(uSuit[q] | d0, uSuit[q + 1] | d1, uSuit[q + 2] | d2, uSuit[q + 3] | d3);
+      }
+
       if (!useCount) {
         for (let p = 0; p < P; p++) {
           const hu = pHa[p], vu = pVa[p];
@@ -1567,24 +1653,34 @@ class BitVal {
         continue;
       }
 
-      for (let u = 0; u < U; u++) keys[u] = uVals[u] * U + u;
-      keys.sort();
-      for (let k = 0; k < U; k++) { const key = keys[k]; order[k] = key - Math.floor(key / U) * U; }
+      // LSD radix sort of the live hands by value (values < 2^24: 3 x 8 bits).
+      let L = 0;
+      cnt.fill(0);
+      for (let u = 0; u < U; u++) {
+        if (dead[u] === i) continue;
+        live[L++] = u;
+        const v = uVals[u];
+        cnt[(v & 255) + 1]++; cnt[257 + ((v >> 8) & 255) + 1]++; cnt[514 + ((v >> 16) & 255) + 1]++;
+      }
+      for (let o = 0; o < 771; o += 257) for (let r = 0; r < 256; r++) cnt[o + r + 1] += cnt[o + r];
+      for (let k = 0; k < L; k++) { const u = live[k]; tmp[cnt[uVals[u] & 255]++] = u; }
+      for (let k = 0; k < L; k++) { const u = tmp[k]; live[cnt[257 + ((uVals[u] >> 8) & 255)]++] = u; }
+      for (let k = 0; k < L; k++) { const u = live[k]; order[cnt[514 + ((uVals[u] >> 16) & 255)]++] = u; }
       lessC.fill(0);
 
       let below = 0; // villain entries with value < current group value
-      for (let g = 0; g < U;) {
+      for (let g = 0; g < L;) {
         const x = uVals[order[g]];
-        let e = g + 1; while (e < U && uVals[order[e]] === x) e++;
+        let e = g + 1; while (e < L && uVals[order[e]] === x) e++;
         // Villain counts at exactly x: total and per card.
         let eqTotal = 0;
-        for (let k = g; k < e; k++) { const u = order[k]; if (dead[u] === i) continue; const m = vMult[u]; if (m) { eqTotal += m; eqC[uA[u]] += m; eqC[uB[u]] += m; } }
+        for (let k = g; k < e; k++) { const u = order[k], m = vMult[u]; if (m) { eqTotal += m; eqC[uA[u]] += m; eqC[uB[u]] += m; } }
         const above = nVi - below - eqTotal;
         // Heroes at x. A villain holding both hero cards (the identical hand)
         // is subtracted on each card, so add it back once (it ties at x).
         for (let k = g; k < e; k++) {
           const u = order[k], m = hMult[u];
-          if (!m || dead[u] === i) continue;
+          if (!m) continue;
           const a = uA[u], c = uB[u];
           const w = below - lessC[a] - lessC[c];
           const t = eqTotal - eqC[a] - eqC[c] + vMult[u];
@@ -1592,7 +1688,7 @@ class BitVal {
           win += w * m; tie += t * m; lose += l * m;
         }
         // Fold this group into the running "below" counts.
-        for (let k = g; k < e; k++) { const u = order[k]; if (dead[u] === i) continue; const m = vMult[u]; if (m) { lessC[uA[u]] += m; lessC[uB[u]] += m; eqC[uA[u]] = 0; eqC[uB[u]] = 0; } }
+        for (let k = g; k < e; k++) { const u = order[k], m = vMult[u]; if (m) { lessC[uA[u]] += m; lessC[uB[u]] += m; eqC[uA[u]] = 0; eqC[uB[u]] = 0; } }
         below += eqTotal;
         g = e;
       }
@@ -1606,16 +1702,34 @@ class BitVal {
    * @private
    */
   async _compareRangeOptimized(setup, progressCallback = null, progressInterval = 100, useWorkers = true) {
-    // Exhaustive (flop/turn): run the EXACT kernel on the main thread. It's now
-    // fast enough (~tens of ms) that this is the right choice, and it makes the
-    // worker and non-worker paths agree byte-for-byte (fixes the exact-vs-
-    // approximate split that per-canonical-group workers had). Splitting runouts
-    // across workers was a net loss here (structured-cloning the pair/conflict
-    // work to every worker dwarfs the compute) — true off-thread parallelism of
-    // this path needs SharedArrayBuffer (COOP/COEP), left as a follow-up. The
-    // reusable _runExhaustive / _buildExhaustiveWork are kept for that.
+    // Exhaustive (flop/turn): the EXACT kernel. Large jobs are split by runout
+    // across the worker pool (the work is a few small typed arrays, cheap to
+    // post); small ones stay on the main thread where they're faster than the
+    // messaging. Totals are integer sums, so both agree byte-for-byte.
     if (setup.isExhaustive) {
+      if (useWorkers && typeof Worker !== 'undefined') {
+        const work = this._buildExhaustiveWork(setup);
+        const comboSuits = setup._comboSuits;
+        const nRun = comboSuits.length >> 2;
+        if (work.U * nRun >= this._EXACT_WORKER_THRESHOLD) {
+          const nw = (typeof navigator !== 'undefined' && navigator.hardwareConcurrency) || 4;
+          // Runouts cost about the same, so one chunk per worker (fewer posts).
+          const chunk = Math.max(1, Math.ceil(nRun / nw));
+          let next = 0, done = 0, win = 0, tie = 0, lose = 0;
+          await this._runKernelBatches(work,
+            () => { if (next >= nRun) return null; const a = next; next = Math.min(nRun, next + chunk); return comboSuits.slice(a * 4, next * 4); },
+            (r, n) => { win += r.win; tie += r.tie; lose += r.lose; done += n; if (progressCallback) progressCallback(done, nRun, `Evaluating runouts ${done}/${nRun}`); },
+            true, progressCallback);
+          if (progressCallback) progressCallback(nRun, nRun, 'Complete');
+          return { win, tie, lose };
+        }
+      }
       return await this._compareRangeOptimizedSequential(setup, progressCallback, progressInterval);
+    }
+
+    // Opt-in shared-board Monte Carlo.
+    if (this.mcSharedBoards) {
+      return await this._compareRangeSharedBoards(setup, progressCallback, useWorkers);
     }
 
     // Group validMatchups by canonical key pair (only matchups that exist).
@@ -1707,6 +1821,115 @@ class BitVal {
       if (progressCallback) progressCallback(totalMatchups, totalMatchups, 'Complete');
     }
 
+    return { win, tie, lose };
+  }
+
+  /**
+   * Runs the exact kernel (_runExhaustive) over batches of runouts — on the
+   * worker pool when allowed and available, otherwise on the main thread.
+   * `nextBatch()` returns an Int32Array of runouts (4 suit masks each) or null
+   * when there's nothing more to do (it may stop early); `onResult(r, n)` gets
+   * each batch's { win, tie, lose } and its runout count. Batches are handed
+   * out to whichever worker is free; a worker that fails is dropped and its
+   * batch (and, if none are left, the rest) runs on the main thread.
+   * @private
+   */
+  async _runKernelBatches(work, nextBatch, onResult, useWorkers, progressCallback = null) {
+    const runLocal = (b) => onResult(this._runExhaustive(work, b, 0, b.length >> 2), b.length >> 2);
+    let workers = null;
+    if (useWorkers && typeof Worker !== 'undefined') {
+      const n = (typeof navigator !== 'undefined' && navigator.hardwareConcurrency) || 4;
+      try { workers = this._acquireWorkers(n); } catch (e) { workers = null; }
+    }
+    if (!workers || workers.length === 0) {
+      let b;
+      while ((b = nextBatch())) {
+        runLocal(b);
+        // Keep the page responsive between batches when someone is watching.
+        if (progressCallback) await new Promise(resolve => setTimeout(resolve, 0));
+      }
+      return;
+    }
+    let alive = workers.length;
+    await Promise.all(workers.map((worker) => new Promise((resolve, reject) => {
+      let current = null;
+      const cleanup = () => { worker.onmessage = null; worker.onerror = null; };
+      const dispatch = () => {
+        current = nextBatch();
+        if (!current) { cleanup(); resolve(); return; }
+        worker.postMessage({ type: 'kernel', work, boards: current });
+      };
+      worker.onmessage = (e) => {
+        if (!e.data.success) { cleanup(); reject(new Error(e.data.error || 'Worker error')); return; }
+        onResult(e.data.result, current.length >> 2);
+        dispatch();
+      };
+      worker.onerror = (error) => {
+        if (error && error.preventDefault) error.preventDefault();
+        cleanup();
+        this._discardWorker(worker);
+        try {
+          if (current) runLocal(current);
+          if (--alive === 0) { let b; while ((b = nextBatch())) runLocal(b); }
+          resolve();
+        } catch (err) { reject(err); }
+      };
+      dispatch();
+    })));
+  }
+
+  /**
+   * Opt-in Monte Carlo (bitval.mcSharedBoards = true): sample boards once from
+   * the live deck and run the exact kernel over them, so every hand is
+   * evaluated once per board and ALL valid pairs are counted on every board.
+   * Hands that collide with a sampled board sit that board out, which is
+   * exactly conditional sampling per matchup, so the equity is unbiased (and
+   * there's no canonical grouping). `iterations` caps the number of boards;
+   * sampling stops early once the batch-means 95% CI half-width of the
+   * aggregate equity is below `mcTarget` percentage points.
+   * @private
+   */
+  async _compareRangeSharedBoards(setup, progressCallback = null, useWorkers = true) {
+    const work = this._buildExhaustiveWork(setup);
+    const ex = this._cardsBitset([...setup.boardCards, ...(setup.deadCards || [])]);
+    const deck = [];
+    for (let c = 0; c < 52; c++) if (!(c < 32 ? ex.lo & (1 << c) : ex.hi & (1 << (c - 32)))) deck.push(c);
+    const pool = Int32Array.from(deck), poolLen = pool.length;
+    const k = setup.numberOfCardsToDeal, total = setup.iterations;
+    if (k > poolLen || total <= 0) return { win: 0, tie: 0, lose: 0 };
+    const batchSize = Math.max(64, Math.min(1024, Math.ceil(total / 16)));
+    const target = setup.mcTarget > 0 ? setup.mcTarget / 100 : 0;
+    let st = new XorShift32().state;
+    let issued = 0, done = 0, stop = false, win = 0, tie = 0, lose = 0;
+    let nb = 0, sumEq = 0, sumEq2 = 0;
+
+    const nextBatch = () => {
+      if (stop || issued >= total) return null;
+      const n = Math.min(batchSize, total - issued);
+      issued += n;
+      const out = new Int32Array(n * 4);
+      for (let i = 0; i < n; i++) {
+        for (let j = 0; j < k; j++) { // partial Fisher-Yates over the live deck
+          st ^= st << 13; st ^= st >> 17; st ^= st << 5;
+          const r = j + Math.abs(st) % (poolLen - j);
+          const c = pool[r]; pool[r] = pool[j]; pool[j] = c;
+          out[i * 4 + (c & 3)] |= 1 << (c >> 2);
+        }
+      }
+      return out;
+    };
+    const onResult = (r, n) => {
+      win += r.win; tie += r.tie; lose += r.lose; done += n;
+      const t = r.win + r.tie + r.lose;
+      if (t > 0) { const e = (r.win + r.tie / 2) / t; nb++; sumEq += e; sumEq2 += e * e; }
+      if (target && nb >= 8) {
+        const mean = sumEq / nb, v = Math.max(0, (sumEq2 - nb * mean * mean) / (nb - 1));
+        if (1.96 * Math.sqrt(v / nb) < target) stop = true;
+      }
+      if (progressCallback) progressCallback(done, total, `Sampled ${done.toLocaleString()} boards`);
+    };
+    await this._runKernelBatches(work, nextBatch, onResult, useWorkers, progressCallback);
+    if (progressCallback) progressCallback(total, total, 'Complete');
     return { win, tie, lose };
   }
 

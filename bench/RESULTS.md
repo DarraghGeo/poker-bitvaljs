@@ -16,6 +16,46 @@
 Flop/turn also went from a ±0.5% approximation to **exact**; preflop went from
 Monte Carlo to an **exact table lookup**.
 
+## opt/7 (1.7.0) — radix kernel, preflop hash, kernel workers, shared-board MC
+
+Node, single-threaded, best-of-3 (same instance; table loaded where relevant):
+
+| scenario | 1.6.0 (ms) | 1.7.0 (ms) | speedup |
+|---|--:|--:|--:|
+| narrow-monotone | 4.8 | 2.9 | 1.7× |
+| narrow-rainbow | 4.8 | 3.0 | 1.6× |
+| narrow-twotone | 4.5 | 2.9 | 1.5× |
+| wide-238×238 flop | 18.2 | 13.8 | 1.3× |
+| full × full flop | 122 | 69 | 1.8× |
+| full × full turn | 5.8 | 3.6 | 1.6× |
+| preflop table, full × full | 293 | 60 | **4.9×** |
+| `loadPreflopTable` | 11.1 (46 cold) | 2.9 | 3.9× |
+
+Opt-in shared-board Monte Carlo (`bitval.mcSharedBoards = true`), preflop with
+a dead card, 100k iterations cap, default `mcTargetPct`:
+
+| scenario | default MC | shared-board | speedup |
+|---|--:|--:|--:|
+| squeeze 82 × wide 238 | 5196 ms (60.94%) | 120 ms (60.70%) | **43×** |
+| wide 238 × wide 238 | 12317 ms (50.00%) | 101 ms (50.00%) | **122×** |
+
+Chromium, 4 cores, warm worker pool: exact full × full flop 73 ms main thread →
+~50 ms on workers; shared-board MC wide × wide 121 ms → 53 ms on workers.
+
+- **Kernel**: 3-pass LSD radix sort of live hands (replaces a Float64 key sort
+  per runout); hands holding a runout card are no longer evaluated. Runouts
+  are built straight from card indices (no BigInt).
+- **Preflop table**: open-addressing hash in typed arrays instead of `Map`;
+  canonical keys only try the suit permutations that minimize the hero part.
+  Full × full totals are identical to 1.6.0.
+- **Workers**: new `type: 'kernel'` worker message; exact flop/turn above
+  `U × runouts ≥ 300k` is split across the pool; shared-board MC hands out
+  board batches dynamically and stops on the aggregate CI.
+- **Shared-board MC** (opt-in): sample boards once, run the exact kernel on
+  them (each hand evaluated once per board, all valid pairs counted).
+  `bench/mc-shared-board.js`: mean |error| 0.06–0.07pp vs the exact table
+  over 19 range pairs, and vs per-pair MC with dead cards.
+
 ## opt/6 — setup, exact kernel, simulate(), workers (vs 1.5.2)
 
 Best-of-3, single-threaded Node (each run includes `new BitVal()`):

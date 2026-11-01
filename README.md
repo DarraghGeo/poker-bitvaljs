@@ -175,7 +175,7 @@ Compares two ranges of hands.
 - `optimize` (Boolean): Use the optimized path (default: `true`). On the flop/turn this is **exact** (byte-identical to `optimize: false`), just much faster.
 - `progressCallback` (Function): Optional callback `(current, total, message) => {}` (default: `null`)
 - `progressInterval` (Number): Update progress callback every N matchups (default: `100`)
-- `useWorkers` (Boolean): Use Web Workers for the Monte Carlo path (default: `true`). The exact flop/turn path runs on the main thread.
+- `useWorkers` (Boolean): Use Web Workers (default: `true`) for Monte Carlo and for large exact flop/turn queries; small exact queries stay on the main thread.
 - `mcTargetPct` (Number): Monte Carlo early-stop target — stop sampling a matchup once its 95% confidence-interval half-width is within this many equity percentage points (default: `0.3`). Pass `0` to force the full `iterations`. Only affects the Monte Carlo (preflop) path.
 
 **Returns:**
@@ -199,6 +199,32 @@ bitval.loadPreflopTable(fs.readFileSync(require.resolve('poker-bitvaljs/bench/pr
 ```
 
 Without a table loaded, preflop falls back to Monte Carlo — nothing else changes.
+
+### Shared-board Monte Carlo (opt-in)
+
+Monte Carlo is only used when the preflop table can't be (preflop with dead
+cards, or no table loaded). By default each matchup samples its own boards.
+Setting `mcSharedBoards` samples boards once and evaluates every hand on each
+board, counting all valid pairs at once — typically 25–100× faster for
+range-vs-range, with no canonical-grouping approximation:
+
+```javascript
+const bitval = new BitVal();
+bitval.mcSharedBoards = true;
+const r = await bitval.compareRange(heroRange, villainRange, [], ['2c'], 5, 100000);
+```
+
+In this mode `iterations` is the maximum number of **boards** sampled (shared by
+all matchups), `mcTargetPct` applies to the aggregate equity, and the returned
+`win`/`tie`/`lose` are summed over valid pairs × boards. Equity percentages are
+directly comparable to the default mode; raw counts are not.
+
+## Changes in 1.7.0
+
+- Opt-in shared-board Monte Carlo (`mcSharedBoards`, above).
+- Large exact flop/turn queries are split across Web Workers.
+- Faster exact flop/turn kernel (radix sort), faster preflop table load and
+  lookup (~4.5× for full range vs full range). Results are unchanged.
 
 ## Changes in 1.6.0
 
@@ -231,6 +257,7 @@ correctness with `npm test` (and `npm run test:full` for the exhaustive proofs).
 - Lower `mcTargetPct` (or set `0`) for higher-precision Monte Carlo; raise it for
   faster, looser preflop-with-dead-cards estimates.
 - Adjust `progressInterval` to balance UI responsiveness vs. performance.
+- For preflop with dead cards, set `bitval.mcSharedBoards = true` (see above).
 - Web Workers load `bitval-worker.js` from next to `bitval.js` (resolved from
   the `<script>` tag's URL). If you bundle or relocate the files, set
   `bitval.workerUrl = '/path/to/bitval-worker.js'`. If workers can't start,

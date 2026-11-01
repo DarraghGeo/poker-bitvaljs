@@ -35,10 +35,18 @@ function deserializeMatchup(matchupData) {
 // Reused BitVal instance (holds the lookup tables; cheap to keep around).
 const _bitval = new BitVal();
 
-// Worker message handler. Workers handle the Monte Carlo path only; the
-// exhaustive exact path runs on the main thread (see BitVal._compareRangeOptimized).
+// Worker message handler: per-matchup Monte Carlo batches, or exact-kernel
+// batches (type: 'kernel').
 self.onmessage = async function(e) {
   try {
+    // Exact kernel over a batch of runouts / sampled boards
+    // (BitVal._runKernelBatches): exact flop/turn and shared-board Monte Carlo.
+    if (e.data.type === 'kernel') {
+      const { work, boards } = e.data;
+      self.postMessage({ success: true, result: _bitval._runExhaustive(work, boards, 0, boards.length >> 2) });
+      return;
+    }
+
     const { matchups, setupData, workerId } = e.data;
     const setup = deserializeSetup(setupData);
     const results = [];
