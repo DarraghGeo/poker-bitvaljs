@@ -200,7 +200,7 @@ bitval.loadPreflopTable(fs.readFileSync(require.resolve('poker-bitvaljs/bench/pr
 
 Without a table loaded, preflop falls back to Monte Carlo — nothing else changes.
 
-## Changes in this release
+## Changes in 1.6.0
 
 - **Flop/turn correctness fix:** exhaustive `compareRange` no longer counts
   runouts that deal a player's own hole card. Flop/turn equities from earlier
