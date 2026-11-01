@@ -16,6 +16,53 @@
 Flop/turn also went from a ±0.5% approximation to **exact**; preflop went from
 Monte Carlo to an **exact table lookup**.
 
+## opt/6 — setup, exact kernel, simulate(), workers (vs 1.5.2)
+
+Best-of-3, single-threaded Node (each run includes `new BitVal()`):
+
+| scenario | 1.5.2 (ms) | opt/6 (ms) | speedup |
+|---|--:|--:|--:|
+| narrow-monotone | 2.9 | 2.9 | 1.0× |
+| narrow-rainbow | 2.9 | 3.0 | 1.0× |
+| narrow-twotone | 2.8 | 2.8 | 1.0× |
+| wide-238×238 flop | 74.9 | 23.4 | **3.2×** |
+| preflop-mc | 178.6 | 159.2 | 1.1× |
+| full × full flop (1176×1176) | 1497 | 121 | **12×** |
+| full × full turn | 758 | 5.3 | **144×** |
+| `simulate()` 100k preflop | 474 | 10.8 | **44×** |
+
+Browser (Chromium, 4 workers, 60×N preflop with a dead card, MC): workers
+~1290 → ~1080 ms; sequential ~4450 → ~3840 ms.
+
+- **Setup**: the unused canonical-key bookkeeping (`hCanon`/`vCanon`/
+  `validCounts`) is gone; the per-pair `validMatchups` list is built lazily and
+  only by the paths that need it, with Number card bitsets instead of BigInt.
+  The exhaustive path builds its work straight from the hand strings.
+- **Exact kernel**: hero+villain hands are deduplicated into one union
+  (evaluated once per runout); large fields are resolved by one sort of the
+  union + a linear sweep over equal-value groups with per-card running counts
+  (replaces per-hero binary searches + scanning ~95 conflicting villains).
+  Duplicate hands in a range are now weighted exactly like the unoptimized
+  path (1.5.2's counting path silently deduplicated them).
+- **`_eval7`**: flush / high-card / pair / trips kickers via 8K lookup tables.
+- **`simulate()`** runs on the Number engine (was BigInt `evaluate()` + a fresh
+  BigInt deck per iteration).
+- **Monte Carlo**: canonical keys computed once per hand (not per pair);
+  synchronous loop with local RNG state when there's no progress callback,
+  shared with the worker; workers pull small chunks dynamically instead of one
+  static batch each (early-stop makes matchup cost uneven).
+- **Workers**: `bitval-worker.js` is resolved next to `bitval.js` (override
+  with `bitval.workerUrl`); if workers can't start or crash, the work runs on
+  the main thread instead of failing.
+- **Package**: `bench/preflop-table.bin` now ships in the npm package so the
+  exact preflop path is usable without a 27-minute generation step.
+
+Correctness: `npm test` + `npm run test:full` pass (eval equivalence over all
+133.8M 7-card hands; differential 4806 exact checks; exact-optimize 2000 + 250
+overlap/duplicate scenarios, 0 mismatches); new `bench/simulate-equivalence.js`
+(1500 exhaustive scenarios identical to the reference engine, MC within 0.5pp
+of the exact table).
+
 ---
 
 Reproduce on any branch:

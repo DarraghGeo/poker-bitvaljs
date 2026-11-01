@@ -185,16 +185,17 @@ Compares two ranges of hands.
 
 Loads the precomputed exact preflop equity table and enables the preflop fast
 path in `compareRange` (empty board, no dead cards). Accepts an `ArrayBuffer`
-(browser) or Node `Buffer`. Generate the table with `npm run gen:preflop`.
+(browser) or Node `Buffer`. The table (~1 MB) ships with the npm package at
+`poker-bitvaljs/bench/preflop-table.bin`; regenerate it with `npm run gen:preflop`.
 
 ```javascript
-// Browser
-const buf = await (await fetch('./bench/preflop-table.bin')).arrayBuffer();
+// Browser (serve the file from wherever you host the package)
+const buf = await (await fetch('./node_modules/poker-bitvaljs/bench/preflop-table.bin')).arrayBuffer();
 bitval.loadPreflopTable(buf);
 
 // Node
 const fs = require('fs');
-bitval.loadPreflopTable(fs.readFileSync('bench/preflop-table.bin'));
+bitval.loadPreflopTable(fs.readFileSync(require.resolve('poker-bitvaljs/bench/preflop-table.bin')));
 ```
 
 Without a table loaded, preflop falls back to Monte Carlo — nothing else changes.
@@ -222,6 +223,10 @@ correctness with `npm test` (and `npm run test:full` for the exhaustive proofs).
 - Lower `mcTargetPct` (or set `0`) for higher-precision Monte Carlo; raise it for
   faster, looser preflop-with-dead-cards estimates.
 - Adjust `progressInterval` to balance UI responsiveness vs. performance.
+- Web Workers load `bitval-worker.js` from next to `bitval.js` (resolved from
+  the `<script>` tag's URL). If you bundle or relocate the files, set
+  `bitval.workerUrl = '/path/to/bitval-worker.js'`. If workers can't start,
+  `compareRange` falls back to the main thread.
 
 ## Testing Locally
 

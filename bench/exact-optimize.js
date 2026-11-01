@@ -60,7 +60,27 @@ const k = r => `${r.win}/${r.tie}/${r.lose}`;
       if (fails <= 5) console.log(`  FAIL board=${board} dead=${dead} hero=${hero.join(',')} villain=${villain.join(',')}\n     opt=${k(opt)} ref=${k(ref)}`);
     }
   }
-  console.log(`  scenarios: ${N}, mismatches: ${fails}, total hand comparisons: ${comparisons.toLocaleString()}`);
+  // Overlapping / duplicated ranges: the exact kernel deduplicates hands across
+  // hero+villain and must still weight duplicates exactly like the per-pair path.
+  const M = Math.max(20, N >> 3);
+  for (let i = 0; i < M; i++) {
+    const used = new Set();
+    const nBoard = 3 + rint(2), board = [];
+    while (board.length < nBoard) { const c = DECK[rint(52)]; if (!used.has(c)) { used.add(c); board.push(c); } }
+    const base = randomRange(16 + rint(50), used);
+    const hero = base.slice(), villain = rng() < 0.5 ? base.slice() : randomRange(16 + rint(50), used).concat(base.slice(0, 10));
+    // duplicates, including the reversed-card spelling of the same hand
+    for (let d = 0; d < 4; d++) { const h = base[rint(base.length)]; hero.push(rng() < 0.5 ? h : h.slice(2) + h.slice(0, 2)); }
+    villain.push(base[rint(base.length)]);
+    const opt = await bv.compareRange(hero, villain, board, [], 5, 1e9, true, null, 100, false);
+    const ref = await bv.compareRange(hero, villain, board, [], 5, 1e9, false, null, 100, false);
+    comparisons += opt.win + opt.tie + opt.lose;
+    if (k(opt) !== k(ref)) {
+      fails++;
+      if (fails <= 5) console.log(`  FAIL (overlap/dup) board=${board} opt=${k(opt)} ref=${k(ref)}`);
+    }
+  }
+  console.log(`  scenarios: ${N} + ${M} overlap/duplicate, mismatches: ${fails}, total hand comparisons: ${comparisons.toLocaleString()}`);
   console.log(`\n${fails === 0 ? 'OK - optimized exhaustive path is exact' : fails + ' MISMATCH(ES)'}`);
   process.exit(fails === 0 ? 0 : 1);
 })();

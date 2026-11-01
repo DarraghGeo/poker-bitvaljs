@@ -32,87 +32,6 @@ function deserializeMatchup(matchupData) {
   };
 }
 
-/**
- * Evaluates a single matchup in the worker context
- * Similar to _evaluateMatchup but without progress callbacks
- */
-async function evaluateMatchupInWorker(heroMask, villainMask, setup, bitval) {
-  let win = 0, tie = 0, lose = 0;
-  const deadMask = heroMask | villainMask | setup.deadCardsMask;
-
-  // Initialize random number generator for Monte Carlo (not needed for exhaustive)
-  if (!setup.isExhaustive) {
-    bitval.xorShift = new XorShift32();
-  }
-  
-  // BigInt-free (Number) hot loop, mirroring BitVal._evaluateMatchup. Cards are
-  // four 13-bit suit rank masks; bitval._eval7 does the evaluation with no BigInt.
-  let iterations = setup.iterations;
-  const heroSuits = bitval._suitsFromBigMask(heroMask);
-  const villainSuits = bitval._suitsFromBigMask(villainMask);
-  const boardBaseSuits = bitval._suitsFromBigMask(setup.boardMask);
-  const hs0 = heroSuits[0], hs1 = heroSuits[1], hs2 = heroSuits[2], hs3 = heroSuits[3];
-  const vs0 = villainSuits[0], vs1 = villainSuits[1], vs2 = villainSuits[2], vs3 = villainSuits[3];
-  const bb0 = boardBaseSuits[0], bb1 = boardBaseSuits[1], bb2 = boardBaseSuits[2], bb3 = boardBaseSuits[3];
-
-  let comboSuits = null;              // flat Int32Array, 4 entries per combo
-  let pool = null, poolLen = 0;       // packed Int32Array of available cards
-  const nDeal = setup.numberOfCardsToDeal;
-  if (setup.isExhaustive) {
-    // Use comboArray from setup if available, otherwise compute it.
-    let comboArray = (setup.comboArray && setup.comboArray.length > 0)
-      ? setup.comboArray
-      : bitval._getCombinations(bitval._getAvailableCardMasksByLookUp(deadMask), nDeal);
-    comboSuits = bitval._buildComboSuits(comboArray);
-    iterations = comboSuits.length >> 2;
-  } else {
-    pool = bitval._availableSuitCards(deadMask);
-    poolLen = pool.length;
-  }
-
-  // Monte Carlo early-stop (mirrors BitVal._evaluateMatchup).
-  const mcTarget = setup.isExhaustive ? 0 : (setup.mcTarget > 0 ? setup.mcTarget / 100 : 0);
-  const reqIters = iterations;
-  let ran = iterations;
-
-  // Main evaluation loop
-  for (let i = 0; i < iterations; i++) {
-    let d0, d1, d2, d3;
-    if (comboSuits) {
-      const b = i << 2;
-      d0 = bb0 | comboSuits[b]; d1 = bb1 | comboSuits[b + 1]; d2 = bb2 | comboSuits[b + 2]; d3 = bb3 | comboSuits[b + 3];
-    } else {
-      d0 = bb0; d1 = bb1; d2 = bb2; d3 = bb3;
-      for (let kk = 0; kk < nDeal; kk++) {
-        const j = kk + bitval.xorShift.next(poolLen - kk);
-        const tmp = pool[kk]; pool[kk] = pool[j]; pool[j] = tmp;
-        const p = pool[kk], bit = p & 0xFFFF, suit = p >> 16;
-        if (suit === 0) d0 |= bit;
-        else if (suit === 1) d1 |= bit;
-        else if (suit === 2) d2 |= bit;
-        else d3 |= bit;
-      }
-    }
-    const hE = bitval._eval7(hs0 | d0, hs1 | d1, hs2 | d2, hs3 | d3);
-    const vE = bitval._eval7(vs0 | d0, vs1 | d1, vs2 | d2, vs3 | d3);
-    if (hE > vE) win++;
-    else if (vE > hE) lose++;
-    else tie++;
-
-    if (mcTarget && (i & 4095) === 4095 && i >= 8191) {
-      const n = i + 1, p = (win + tie * 0.5) / n;
-      if (1.96 * Math.sqrt(p * (1 - p) / n) < mcTarget) { ran = n; break; }
-    }
-  }
-
-  if (ran < reqIters && ran > 0) {
-    const s = reqIters / ran;
-    win = Math.round(win * s); tie = Math.round(tie * s); lose = Math.round(lose * s);
-  }
-
-  return { matchupWin: win, matchupTie: tie, matchupLose: lose };
-}
-
 // Reused BitVal instance (holds the lookup tables; cheap to keep around).
 const _bitval = new BitVal();
 
@@ -126,7 +45,8 @@ self.onmessage = async function(e) {
 
     for (const matchupData of matchups) {
       const matchup = deserializeMatchup(matchupData);
-      const result = await evaluateMatchupInWorker(matchup.heroMask, matchup.villainMask, setup, _bitval);
+      // Same synchronous loop as the main thread (BitVal._evaluateMatchupSync).
+      const result = _bitval._evaluateMatchupSync(matchup.heroMask, matchup.villainMask, setup);
       results.push({ key: matchup.key, validCount: matchup.validCount, ...result });
     }
     

@@ -1,6 +1,8 @@
-# Exclude everything except bitval.js, bitval-worker.js and README.md
+# Exclude everything except bitval.js, bitval-worker.js, the preflop table and README.md
 *
 !bitval.js
 !bitval-worker.js
+!bench/
+bench/*
+!bench/preflop-table.bin
 !README.md
-
