@@ -57,6 +57,17 @@ Browser (Chromium, 4 workers, 60×N preflop with a dead card, MC): workers
 - **Package**: `bench/preflop-table.bin` now ships in the npm package so the
   exact preflop path is usable without a 27-minute generation step.
 
+**Correctness fix (changes flop/turn results):** `compareRange` on the flop/turn
+used to enumerate every runout from the cards not on the board or dead —
+including runouts that deal one of the players' own hole cards (e.g. 1176
+runouts instead of 990 for one hand vs one hand on a flop). Those impossible
+deals are now skipped in every exhaustive path, so flop/turn `compareRange`
+agrees with `simulate()` and with a pair-by-pair reference. Equities shift
+accordingly (e.g. narrow-twotone 78.30% → 81.01%, AsKs vs QhQd on 2c7d9h
+21.8% → 23.9%). `bench/engine-differential.js` now checks against the reference
+engine's `simulate()` (which always dealt correctly) rather than its
+`compareRange()` (which shared the bug).
+
 Correctness: `npm test` + `npm run test:full` pass (eval equivalence over all
 133.8M 7-card hands; differential 4806 exact checks; exact-optimize 2000 + 250
 overlap/duplicate scenarios, 0 mismatches); new `bench/simulate-equivalence.js`

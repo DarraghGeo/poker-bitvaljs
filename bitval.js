@@ -1090,9 +1090,12 @@ class BitVal {
     if (setup.isExhaustive) {
       const comboSuits = setup._comboSuits || (setup._comboSuits = this._buildComboSuits(setup.comboArray));
       const n = comboSuits.length >> 2;
+      const m0 = hs0 | vs0, m1 = hs1 | vs1, m2 = hs2 | vs2, m3 = hs3 | vs3;
       for (let i = 0; i < n; i++) {
         const b = i << 2;
-        const d0 = bb0 | comboSuits[b], d1 = bb1 | comboSuits[b + 1], d2 = bb2 | comboSuits[b + 2], d3 = bb3 | comboSuits[b + 3];
+        const c0 = comboSuits[b], c1 = comboSuits[b + 1], c2 = comboSuits[b + 2], c3 = comboSuits[b + 3];
+        if ((c0 & m0) | (c1 & m1) | (c2 & m2) | (c3 & m3)) continue; // runout uses a hole card
+        const d0 = bb0 | c0, d1 = bb1 | c1, d2 = bb2 | c2, d3 = bb3 | c3;
         const hE = this._eval7(hs0 | d0, hs1 | d1, hs2 | d2, hs3 | d3);
         const vE = this._eval7(vs0 | d0, vs1 | d1, vs2 | d2, vs3 | d3);
         if (hE > vE) win++; else if (vE > hE) lose++; else tie++;
@@ -1188,10 +1191,13 @@ class BitVal {
     for (let i = 0; i < iterations; i++) {
       // Build the runout as suit rank-masks: precomputed combo (exhaustive) or
       // a Fisher-Yates draw from the available pool (Monte Carlo).
-      let d0, d1, d2, d3;
+      let d0, d1, d2, d3, live = true;
       if (comboSuits) {
         const b = i << 2;
-        d0 = bb0 | comboSuits[b]; d1 = bb1 | comboSuits[b + 1]; d2 = bb2 | comboSuits[b + 2]; d3 = bb3 | comboSuits[b + 3];
+        const c0 = comboSuits[b], c1 = comboSuits[b + 1], c2 = comboSuits[b + 2], c3 = comboSuits[b + 3];
+        // Skip runouts that use a hole card (impossible deals).
+        live = ((c0 & (hs0 | vs0)) | (c1 & (hs1 | vs1)) | (c2 & (hs2 | vs2)) | (c3 & (hs3 | vs3))) === 0;
+        d0 = bb0 | c0; d1 = bb1 | c1; d2 = bb2 | c2; d3 = bb3 | c3;
       } else {
         d0 = bb0; d1 = bb1; d2 = bb2; d3 = bb3;
         for (let k = 0; k < nDeal; k++) {
@@ -1205,11 +1211,13 @@ class BitVal {
         }
       }
 
-      const hE = this._eval7(hs0 | d0, hs1 | d1, hs2 | d2, hs3 | d3);
-      const vE = this._eval7(vs0 | d0, vs1 | d1, vs2 | d2, vs3 | d3);
-      if (hE > vE) win++;
-      else if (vE > hE) lose++;
-      else tie++;
+      if (live) {
+        const hE = this._eval7(hs0 | d0, hs1 | d1, hs2 | d2, hs3 | d3);
+        const vE = this._eval7(vs0 | d0, vs1 | d1, vs2 | d2, vs3 | d3);
+        if (hE > vE) win++;
+        else if (vE > hE) lose++;
+        else tie++;
+      }
 
       // Monte Carlo early-stop check (every 4096 draws, past a warm-up).
       if (mcTarget && (i & 4095) === 4095 && i >= 8191) {
@@ -1471,6 +1479,14 @@ class BitVal {
     const nH = heroU.length, nV = villU.length;
     const bb = setup._boardSuits || (setup._boardSuits = this._suitsFromBigMask(setup.boardMask));
 
+    // cardU[cardUOff[c]..cardUOff[c+1]) = union hands holding card c, used to
+    // drop hands whose hole cards appear in a runout (that deal is impossible).
+    const cardUOff = new Int32Array(53);
+    for (let u = 0; u < U; u++) { cardUOff[uA[u] + 1]++; cardUOff[uB[u] + 1]++; }
+    for (let c = 0; c < 52; c++) cardUOff[c + 1] += cardUOff[c];
+    const cardU = new Int32Array(U * 2), cfill = cardUOff.slice(0, 52);
+    for (let u = 0; u < U; u++) { cardU[cfill[uA[u]]++] = u; cardU[cfill[uB[u]]++] = u; }
+
     const useCount = nH >= 16 && nV >= 16;
     let pHa = null, pVa = null, P = 0, cardTotal = null;
     if (useCount) {
@@ -1489,7 +1505,7 @@ class BitVal {
       pHa = Int32Array.from(ph); pVa = Int32Array.from(pv); P = pHa.length;
     }
     return {
-      uSuit, uA, uB, hMult, vMult, U, nH, nV, useCount, pHa, pVa, P, cardTotal,
+      uSuit, uA, uB, hMult, vMult, U, nH, nV, useCount, pHa, pVa, P, cardTotal, cardUOff, cardU,
       bb0: bb[0], bb1: bb[1], bb2: bb[2], bb3: bb[3]
     };
   }
@@ -1504,8 +1520,12 @@ class BitVal {
    * @private
    */
   _runExhaustive(work, comboSuits, runStart, runEnd) {
-    const { uSuit, uA, uB, hMult, vMult, U, nV, useCount, pHa, pVa, P, cardTotal, bb0, bb1, bb2, bb3 } = work;
+    const { uSuit, uA, uB, hMult, vMult, U, nV, useCount, pHa, pVa, P, cardTotal, cardUOff, cardU, bb0, bb1, bb2, bb3 } = work;
     const uVals = new Int32Array(U);
+    // dead[u] === i  <=>  hand u holds a card dealt in runout i, so it takes no
+    // part in that runout (neither as hero nor as villain).
+    const dead = new Int32Array(U).fill(-1);
+    const cardTot = useCount ? new Int32Array(52) : null;
     let win = 0, tie = 0, lose = 0;
 
     // Large-field scratch: sort keys (value*U + u, exact in a double) and
@@ -1520,8 +1540,30 @@ class BitVal {
       const d0 = bb0 | comboSuits[b], d1 = bb1 | comboSuits[b + 1], d2 = bb2 | comboSuits[b + 2], d3 = bb3 | comboSuits[b + 3];
       for (let u = 0; u < U; u++) { const q = u << 2; uVals[u] = this._eval7(uSuit[q] | d0, uSuit[q + 1] | d1, uSuit[q + 2] | d2, uSuit[q + 3] | d3); }
 
+      // Mark hands holding a runout card; for counting, also remove those
+      // villains from the field total and the per-card totals.
+      let nVi = nV;
+      if (useCount) cardTot.set(cardTotal);
+      for (let s = 0; s < 4; s++) {
+        let m = comboSuits[b + s];
+        while (m) {
+          const low = m & -m; m ^= low;
+          const c = (31 - Math.clz32(low)) * 4 + s;
+          for (let k = cardUOff[c], e = cardUOff[c + 1]; k < e; k++) {
+            const u = cardU[k];
+            if (dead[u] === i) continue;
+            dead[u] = i;
+            if (useCount) { const vm = vMult[u]; if (vm) { nVi -= vm; cardTot[uA[u]] -= vm; cardTot[uB[u]] -= vm; } }
+          }
+        }
+      }
+
       if (!useCount) {
-        for (let p = 0; p < P; p++) { const hv = uVals[pHa[p]], vv = uVals[pVa[p]]; if (hv > vv) win++; else if (vv > hv) lose++; else tie++; }
+        for (let p = 0; p < P; p++) {
+          const hu = pHa[p], vu = pVa[p];
+          if (dead[hu] === i || dead[vu] === i) continue;
+          const hv = uVals[hu], vv = uVals[vu]; if (hv > vv) win++; else if (vv > hv) lose++; else tie++;
+        }
         continue;
       }
 
@@ -1536,21 +1578,21 @@ class BitVal {
         let e = g + 1; while (e < U && uVals[order[e]] === x) e++;
         // Villain counts at exactly x: total and per card.
         let eqTotal = 0;
-        for (let k = g; k < e; k++) { const u = order[k], m = vMult[u]; if (m) { eqTotal += m; eqC[uA[u]] += m; eqC[uB[u]] += m; } }
-        const above = nV - below - eqTotal;
+        for (let k = g; k < e; k++) { const u = order[k]; if (dead[u] === i) continue; const m = vMult[u]; if (m) { eqTotal += m; eqC[uA[u]] += m; eqC[uB[u]] += m; } }
+        const above = nVi - below - eqTotal;
         // Heroes at x. A villain holding both hero cards (the identical hand)
         // is subtracted on each card, so add it back once (it ties at x).
         for (let k = g; k < e; k++) {
           const u = order[k], m = hMult[u];
-          if (!m) continue;
+          if (!m || dead[u] === i) continue;
           const a = uA[u], c = uB[u];
           const w = below - lessC[a] - lessC[c];
           const t = eqTotal - eqC[a] - eqC[c] + vMult[u];
-          const l = above - (cardTotal[a] - lessC[a] - eqC[a]) - (cardTotal[c] - lessC[c] - eqC[c]);
+          const l = above - (cardTot[a] - lessC[a] - eqC[a]) - (cardTot[c] - lessC[c] - eqC[c]);
           win += w * m; tie += t * m; lose += l * m;
         }
         // Fold this group into the running "below" counts.
-        for (let k = g; k < e; k++) { const u = order[k], m = vMult[u]; if (m) { lessC[uA[u]] += m; lessC[uB[u]] += m; eqC[uA[u]] = 0; eqC[uB[u]] = 0; } }
+        for (let k = g; k < e; k++) { const u = order[k]; if (dead[u] === i) continue; const m = vMult[u]; if (m) { lessC[uA[u]] += m; lessC[uB[u]] += m; eqC[uA[u]] = 0; eqC[uB[u]] = 0; } }
         below += eqTotal;
         g = e;
       }

@@ -200,6 +200,14 @@ bitval.loadPreflopTable(fs.readFileSync(require.resolve('poker-bitvaljs/bench/pr
 
 Without a table loaded, preflop falls back to Monte Carlo — nothing else changes.
 
+## Changes in this release
+
+- **Flop/turn correctness fix:** exhaustive `compareRange` no longer counts
+  runouts that deal a player's own hole card. Flop/turn equities from earlier
+  versions were slightly off (typically 0–3 percentage points) and will change.
+- Large range-vs-range flop/turn is ~10–100× faster; `simulate()` is ~45×
+  faster; the preflop table ships with the package.
+
 ## Performance
 
 - **No BigInt in the hot path** — cards are four 13-bit suit lanes evaluated with

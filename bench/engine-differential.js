@@ -31,9 +31,28 @@ const eq = r => (r.win + r.tie / 2) / (r.win + r.tie + r.lose) * 100;
 
 let exactChecks = 0, exactFails = 0, handComparisons = 0;
 
+// Ground truth for one hand vs one hand: the reference engine's simulate(),
+// which enumerates only runouts that avoid BOTH players' hole cards (and board
+// + dead). The reference compareRange() is NOT used for exhaustive checks: it
+// shares the pre-1.6 bug of dealing runouts that reuse a hole card.
+const refPair = (h, v, board, dead) => {
+  const r = rv.simulate(1, 5, [h.slice(0, 2), h.slice(2, 4)], [v.slice(0, 2), v.slice(2, 4)], board, dead);
+  return { win: r.win, tie: r.tie, lose: r.lose };
+};
+// Range vs range ground truth: sum of refPair over every non-conflicting pair.
+const refRange = (hero, villain, board, dead) => {
+  const out = { win: 0, tie: 0, lose: 0 };
+  for (const h of hero) for (const v of villain) {
+    const cards = [h.slice(0, 2), h.slice(2, 4), v.slice(0, 2), v.slice(2, 4)];
+    if (new Set([...cards, ...board]).size !== 4 + board.length) continue;
+    const r = refPair(h, v, board, dead); out.win += r.win; out.tie += r.tie; out.lose += r.lose;
+  }
+  return out;
+};
+
 async function assertExact(hero, villain, board, dead, optimize, label) {
   const n = await nv.compareRange(hero, villain, board, dead, 5, 1e9, optimize, null, 100, false);
-  const r = await rv.compareRange(hero, villain, board, dead, 5, 1e9, optimize, null, 100, false);
+  const r = refRange(hero, villain, board, dead);
   exactChecks++;
   handComparisons += n.win + n.tie + n.lose;
   if (k(n) !== k(r)) {
@@ -82,6 +101,16 @@ async function assertExact(hero, villain, board, dead, optimize, label) {
     exactChecks++;
     handComparisons += opt.win + opt.tie + opt.lose;
     if (k(opt) !== k(unopt)) { exactFails++; console.log(`  FAIL wide board=${board.join('')}: opt=${k(opt)} unopt=${k(unopt)}`); }
+  }
+
+  // 4b) Small random ranges vs the pair-by-pair reference (exercises the
+  //     counting kernel's hole-card exclusion; >=16 hands per side uses it).
+  console.log('4b) 40 random range-vs-range flops/turns vs pair-by-pair reference (exact)...');
+  for (let i = 0; i < 40; i++) {
+    const board = dealDistinct(3 + (i % 2));
+    const pick = (n) => { const out = new Set(); while (out.size < n) { const c = dealDistinct(2); if (!board.includes(c[0]) && !board.includes(c[1])) out.add(c[0] + c[1]); } return [...out]; };
+    const hero = pick(i % 4 === 0 ? 3 : 16), villain = pick(i % 4 === 0 ? 4 : 18);
+    await assertExact(hero, villain, board, [], true, 'range');
   }
 
   console.log(`\nExact checks: ${exactChecks}, failures: ${exactFails}, total hand comparisons: ${handComparisons.toLocaleString()}`);
