@@ -1,8 +1,10 @@
 # Publishes to npm when a push to main carries a package.json version that
 # isn't on npm yet (pushes that don't bump the version are no-ops).
-# Auth is npm Trusted Publishing (OIDC) — no NPM_TOKEN secret. On npmjs.com,
-# add a trusted publisher for this package: GitHub Actions, repository
-# DarraghGeo/poker-bitvaljs, workflow file "publish.yml".
+#
+# Auth: an npm granular access token in the repository secret NPM_TOKEN.
+# If npm Trusted Publishing (OIDC) is configured for this package
+# (repository DarraghGeo/poker-bitvaljs, workflow file "publish.yml"), npm
+# uses that instead and the token is no longer needed.
 name: Publish to npm
 
 on:
@@ -12,7 +14,7 @@ on:
 
 permissions:
   contents: read
-  id-token: write # required for npm Trusted Publishing (OIDC)
+  id-token: write # npm provenance + Trusted Publishing (OIDC)
 
 concurrency:
   group: npm-publish
@@ -29,7 +31,7 @@ jobs:
           node-version: 24
           registry-url: https://registry.npmjs.org
 
-      # Trusted Publishing needs npm >= 11.5.1.
+      # Trusted Publishing needs npm >= 11.5.1 (harmless when using a token).
       - name: Update npm
         run: npm install -g npm@latest
 
@@ -52,4 +54,6 @@ jobs:
 
       - name: Publish
         if: steps.check.outputs.publish == 'true'
-        run: npm publish --access public
+        run: npm publish --access public --provenance
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
