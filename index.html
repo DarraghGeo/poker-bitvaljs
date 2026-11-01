@@ -268,11 +268,16 @@
                 <label for="boardCards">Board Cards (optional):</label>
                 <input type="text" id="boardCards" placeholder="e.g., As Ks Qs or leave empty for preflop">
             </div>
+
+            <div class="form-group">
+                <label for="deadCards">Dead Cards (optional):</label>
+                <input type="text" id="deadCards" placeholder="e.g., 2c 7h (cards known to be out of play)">
+            </div>
             
             <div class="form-group">
                 <div class="checkbox-group">
                     <input type="checkbox" id="optimize" checked>
-                    <label for="optimize">Enable Canonical Caching (Optimize)</label>
+                    <label for="optimize">Optimize (exact evaluate-once / canonical grouping)</label>
                 </div>
             </div>
             
@@ -282,7 +287,17 @@
                     <label for="useWorkers">Use Web Workers (Multi-threading)</label>
                 </div>
                 <div style="font-size: 11px; color: #888; margin-top: 4px;">
-                    Parallelize matchup evaluation across multiple CPU cores (3-7x faster on multi-core systems)
+                    Use multiple CPU cores for Monte Carlo and for large exact (flop/turn) queries
+                </div>
+            </div>
+
+            <div class="form-group">
+                <div class="checkbox-group">
+                    <input type="checkbox" id="mcSharedBoards" checked>
+                    <label for="mcSharedBoards">Shared-board Monte Carlo</label>
+                </div>
+                <div style="font-size: 11px; color: #888; margin-top: 4px;">
+                    Monte Carlo only (preflop with dead cards, or no preflop table): sample boards once and evaluate every hand on each board &mdash; much faster for range vs range
                 </div>
             </div>
             
@@ -381,6 +396,7 @@
         
         let bitval;
         let RangeManagerClass;
+        let tableLoaded = false;
         
         async function init() {
             // BitVal is loaded via script tag, so it's available as window.BitVal
@@ -390,7 +406,7 @@
             // exact preflop range-vs-range; falls back to Monte Carlo if absent.
             fetch('./bench/preflop-table.bin')
                 .then(r => r.ok ? r.arrayBuffer() : Promise.reject(new Error('HTTP ' + r.status)))
-                .then(buf => { bitval.loadPreflopTable(buf); console.log('Preflop table loaded (' + (buf.byteLength / 1048576).toFixed(2) + ' MB, exact preflop enabled)'); })
+                .then(buf => { bitval.loadPreflopTable(buf); tableLoaded = true; console.log('Preflop table loaded (' + (buf.byteLength / 1048576).toFixed(2) + ' MB, exact preflop enabled)'); })
                 .catch(e => console.warn('Preflop table not loaded; preflop uses Monte Carlo:', e.message));
 
             try {
@@ -409,6 +425,16 @@
         function parseBoardCards(boardStr) {
             if (!boardStr || !boardStr.trim()) return [];
             return boardStr.trim().split(/\s+/).filter(c => c);
+        }
+
+        // Validates a list of card strings (e.g. "As", "7h"); throws on bad or repeated cards.
+        function checkCards(cards, what) {
+            const seen = new Set();
+            for (const c of cards) {
+                if (!/^[2-9TJQKA][shdc]$/.test(c)) throw new Error(`${what}: "${c}" is not a card (use e.g. As, Td, 7h)`);
+                if (seen.has(c)) throw new Error(`${what}: ${c} appears twice`);
+                seen.add(c);
+            }
         }
         
         function parseRange(rangeStr) {
@@ -450,13 +476,20 @@
                 const player1RangeStr = document.getElementById('player1Range').value;
                 const player2RangeStr = document.getElementById('player2Range').value;
                 const boardStr = document.getElementById('boardCards').value;
+                const deadStr = document.getElementById('deadCards').value;
                 const optimize = document.getElementById('optimize').checked;
                 const useWorkers = document.getElementById('useWorkers').checked;
+                const sharedBoards = document.getElementById('mcSharedBoards').checked;
                 
                 // Parse inputs
                 const player1Hands = parseRange(player1RangeStr);
                 const player2Hands = parseRange(player2RangeStr);
                 const boardCards = parseBoardCards(boardStr);
+                const deadCards = parseBoardCards(deadStr);
+                checkCards(boardCards, 'Board cards');
+                checkCards(deadCards, 'Dead cards');
+                const clash = deadCards.find(c => boardCards.includes(c));
+                if (clash) throw new Error(`${clash} is both a board card and a dead card`);
                 
                 // Inputs parsed successfully
                 
@@ -468,9 +501,14 @@
                 }
                 
                 // RangeManager.toArray() returns hands as 4-character strings like "AsKs"
-                // bitval.compareRange expects an array of these strings
-                const player1HandsFormatted = player1Hands;
-                const player2HandsFormatted = player2Hands;
+                // bitval.compareRange expects an array of these strings. A hand
+                // holding a dead card can't be dealt, so drop it from the range.
+                const holdsDead = h => deadCards.includes(h.slice(0, 2)) || deadCards.includes(h.slice(2, 4));
+                const player1HandsFormatted = player1Hands.filter(h => !holdsDead(h));
+                const player2HandsFormatted = player2Hands.filter(h => !holdsDead(h));
+                if (player1HandsFormatted.length === 0 || player2HandsFormatted.length === 0) {
+                    throw new Error('Every hand in a range uses a dead card');
+                }
                 
                 // Determine number of board cards and iterations
                 const numberOfBoardCards = 5;
@@ -487,13 +525,25 @@
                     document.getElementById('progressText').textContent = message || `Processing: ${current.toLocaleString()} / ${total.toLocaleString()}`;
                 };
                 
+                // Which calculation the library will run (mirrors compareRange's routing).
+                const cardsToCome = numberOfBoardCards - boardCards.length;
+                let calculation;
+                if (optimize && tableLoaded && boardCards.length === 0 && deadCards.length === 0) calculation = 'Exact preflop table';
+                else if (cardsToCome <= 2) calculation = 'Exact enumeration';
+                else if (optimize && sharedBoards) calculation = 'Monte Carlo (shared boards)';
+                else calculation = 'Monte Carlo (per matchup)';
+                const iterationsLabel = calculation === 'Monte Carlo (shared boards)' ? 'Boards Sampled (max):'
+                    : calculation.startsWith('Monte Carlo') ? 'Iterations per Matchup:' : 'Iterations:';
+                const iterationsShown = calculation.startsWith('Monte Carlo') ? iterations.toLocaleString() : 'n/a (exact)';
+
                 // Benchmark
+                bitval.mcSharedBoards = sharedBoards;
                 const startTime = performance.now();
                 const result = await bitval.compareRange(
                     player1HandsFormatted,
                     player2HandsFormatted,
                     boardCards,
-                    [],
+                    deadCards,
                     numberOfBoardCards,
                     iterations,
                     optimize,
@@ -533,9 +583,9 @@
                 
                 // Display benchmarks
                 const totalMatchups = result.win + result.tie + result.lose;
-                const totalHandCombinations = player1Hands.length * player2Hands.length;
+                const totalHandCombinations = player1HandsFormatted.length * player2HandsFormatted.length;
                 const throughput = totalMatchups / (executionTime / 1000);
-                const avgTimePerMatchup = executionTime / totalMatchups;
+                const avgTimePerHandPair = totalHandCombinations > 0 ? executionTime / totalHandCombinations : 0;
                 
                 const benchmarksDiv = document.getElementById('benchmarks');
                 benchmarksDiv.innerHTML = `
@@ -544,20 +594,24 @@
                         <span class="benchmark-value">${executionTime.toFixed(2)} ms</span>
                     </div>
                     <div class="benchmark-item">
-                        <span class="benchmark-label">Total Matchups Evaluated:</span>
+                        <span class="benchmark-label">Calculation:</span>
+                        <span class="benchmark-value">${calculation}</span>
+                    </div>
+                    <div class="benchmark-item">
+                        <span class="benchmark-label">Outcomes Counted:</span>
                         <span class="benchmark-value">${totalMatchups.toLocaleString()}</span>
                     </div>
                     <div class="benchmark-item">
-                        <span class="benchmark-label">Iterations per Matchup:</span>
-                        <span class="benchmark-value">${iterations.toLocaleString()}</span>
+                        <span class="benchmark-label">${iterationsLabel}</span>
+                        <span class="benchmark-value">${iterationsShown}</span>
                     </div>
                     <div class="benchmark-item">
                         <span class="benchmark-label">Player 1 Hands:</span>
-                        <span class="benchmark-value">${player1Hands.length.toLocaleString()}</span>
+                        <span class="benchmark-value">${player1HandsFormatted.length.toLocaleString()}</span>
                     </div>
                     <div class="benchmark-item">
                         <span class="benchmark-label">Player 2 Hands:</span>
-                        <span class="benchmark-value">${player2Hands.length.toLocaleString()}</span>
+                        <span class="benchmark-value">${player2HandsFormatted.length.toLocaleString()}</span>
                     </div>
                     <div class="benchmark-item">
                         <span class="benchmark-label">Total Hand Combinations:</span>
@@ -568,16 +622,20 @@
                         <span class="benchmark-value">${boardCards.length || 0}</span>
                     </div>
                     <div class="benchmark-item">
+                        <span class="benchmark-label">Dead Cards:</span>
+                        <span class="benchmark-value">${deadCards.length}</span>
+                    </div>
+                    <div class="benchmark-item">
                         <span class="benchmark-label">Optimize Mode:</span>
                         <span class="benchmark-value">${optimize ? 'Enabled' : 'Disabled'}</span>
                     </div>
                     <div class="benchmark-item">
                         <span class="benchmark-label">Throughput:</span>
-                        <span class="benchmark-value">${Math.round(throughput).toLocaleString()} matchups/sec</span>
+                        <span class="benchmark-value">${Math.round(throughput).toLocaleString()} outcomes/sec</span>
                     </div>
                     <div class="benchmark-item">
-                        <span class="benchmark-label">Avg Time per Matchup:</span>
-                        <span class="benchmark-value">${avgTimePerMatchup.toFixed(3)} ms</span>
+                        <span class="benchmark-label">Avg Time per Hand Pair:</span>
+                        <span class="benchmark-value">${avgTimePerHandPair.toFixed(4)} ms</span>
                     </div>
                 `;
                 
