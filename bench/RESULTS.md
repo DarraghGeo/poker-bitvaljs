@@ -16,6 +16,15 @@
 Flop/turn also went from a ±0.5% approximation to **exact**; preflop went from
 Monte Carlo to an **exact table lookup**.
 
+## 1.9.0 — public fast evaluator
+
+`evaluateSuits` is the evaluator's body and `_eval7` is assigned the same
+function object, so there is no wrapper call. Node, 300k random 7-card hands,
+best of 7: 1.8.0 `_eval7` 20.9–21.1 ns; 1.9.0 `evaluateSuits` 20.6–20.8 ns,
+`_eval7` 20.6–21.4 ns; `evaluateCards` 85–111 ns; `toSuitMasks` +
+`evaluateSuits` ~128 ns; legacy `evaluate` ~800 ns (prebuilt BigInt mask),
+~1,230 ns with `getBitMasked`. `npm run bench` unchanged.
+
 ## 1.8.0 — combo weights
 
 No speed changes intended: the kernel's per-hand multiplicities became

@@ -6,8 +6,8 @@ High-performance poker hand evaluator optimized for browser environments, using 
 
 ## Features
 
-- **Fast hand evaluation** using four 13-bit suit lanes and plain 32-bit integers
-  (no BigInt in the hot path)
+- **Fast hand evaluation** (`evaluateSuits` / `evaluateCards`, ~20–100 ns per
+  hand) using four 13-bit suit lanes and plain 32-bit integers, no BigInt
 - **Exact range vs range equity on the flop and turn**: every hand is
   evaluated once per runout and all matchups are counted at once — identical
   to brute force, no approximation
@@ -38,13 +38,17 @@ npm install poker-bitvaljs
 const BitVal = require('poker-bitvaljs');
 const bitval = new BitVal();
 
-// Evaluate a hand (7 cards: 2 hole cards + 5 board cards)
-const handMask = bitval.getBitMasked(['As', 'Ah', 'Ks', 'Qs', 'Js', 'Ts', '9s']);
-const [evaluation, kickers] = bitval.evaluate(handMask);
+// Evaluate a hand (5-7 cards, e.g. 2 hole cards + 5 board cards)
+const a = bitval.evaluateCards(['As', 'Ah', 'Kd', 'Qs', 'Js', 'Ts', '2c']);
+const b = bitval.evaluateCards(['Kc', 'Kh', 'Ks', 'Qs', 'Js', 'Ts', '9s']);
 
-// Returns [evaluation_score, kickers]
-// Higher evaluation score = stronger hand
+// Higher value = stronger hand; equal values tie
+a > b;                    // false: a is an ace-high straight, b a straight flush
+bitval.handCategory(a);   // 'Straight'
+bitval.handCategory(b);   // 'Straight Flush'
 ```
+
+See [Fast evaluation](#fast-evaluation) for the fastest form and the value format.
 
 ### Range vs Range Comparison
 
@@ -157,9 +161,49 @@ const result = await bitval.compareRange(
 
 Creates a new BitVal instance.
 
+### Fast evaluation
+
+`evaluateSuits` is the evaluator the library itself uses (~20 ns per hand). It
+takes the hand as four 13-bit rank masks, one per suit, so you can build the
+hole-card masks once and OR in each board:
+
+```javascript
+const [s, h, d, c] = bitval.toSuitMasks(['As', 'Kd']);        // hole cards, once
+const [bs, bh, bd, bc] = bitval.toSuitMasks(['Qs', 'Js', 'Ts', '2c', '7h']);
+const value = bitval.evaluateSuits(s | bs, h | bh, d | bd, c | bc);
+bitval.handCategory(value);  // 'Straight'
+```
+
+- **`evaluateSuits(s, h, d, c)`**: masks in the order spades, hearts,
+  diamonds, clubs; bit 0 = deuce … bit 12 = ace. For 5–7 distinct cards.
+- **`evaluateCards(cards)`**: the same value from card strings (~100 ns).
+- **`toSuitMasks(cards)`**: card strings → `[s, h, d, c]`.
+- **`handCategory(value)`**: `'High Card'`, `'Pair'`, `'Two Pair'`, `'Trips'`,
+  `'Straight'`, `'Flush'`, `'Full House'`, `'Quads'` or `'Straight Flush'`.
+  `BitVal.HAND_CATEGORIES` lists them by index.
+
+The value is an integer in `[0, 2^24)`: higher beats lower and equal values
+tie. `value >>> 20` is the category index (0 high card … 8 straight flush), and
+the lower 20 bits rank hands within a category. This format is stable across
+versions. Hands are ordered exactly as `evaluate()` orders them.
+
+`_eval7` (used by some integrations before this was public) is the same
+function as `evaluateSuits` and keeps working.
+
+| Method (Node, per 7-card hand) | Time |
+|---|--:|
+| `evaluateSuits` on prebuilt masks | ~21 ns |
+| `evaluateCards` | ~85–110 ns |
+| `toSuitMasks` + `evaluateSuits` | ~130 ns |
+| `evaluate` on a prebuilt BigInt mask (legacy) | ~800 ns |
+| `getBitMasked` + `evaluate` (legacy) | ~1,200 ns |
+
 ### `evaluate(handMask)`
 
-Evaluates a poker hand represented as a BigInt bitmask.
+The original BigInt API, kept for compatibility: it returns BigInt
+`[score, kickers]` for a mask from `getBitMasked`. Nothing in the library
+uses it any more; prefer `evaluateSuits` / `evaluateCards`, which order hands
+identically and are much faster.
 
 **Parameters:**
 - `handMask` (BigInt): Bitmask representing 5-7 cards
@@ -288,6 +332,12 @@ In this mode `iterations` is the maximum number of **boards** sampled (shared by
 all matchups), `mcTargetPct` applies to the aggregate equity, and the returned
 `win`/`tie`/`lose` are summed over valid pairs × boards. Equity percentages are
 directly comparable to the default mode; raw counts are not.
+
+## Changes in 1.9.0
+
+- The fast evaluator is public: [`evaluateSuits`, `evaluateCards`,
+  `toSuitMasks`, `handCategory`](#fast-evaluation). `_eval7` still works (same
+  function). `evaluate()` is unchanged and documented as the legacy BigInt API.
 
 ## Changes in 1.8.0
 

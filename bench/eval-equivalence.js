@@ -125,5 +125,32 @@ let allOk = true;
   allOk = chk.verify('7-card order-equivalence') && allOk;
 }
 
+// ---- 3) Public fast-evaluator API (evaluateSuits / evaluateCards / toSuitMasks / handCategory) ----
+{
+  console.log('\nPublic fast-evaluator API (300,000 random 5-, 6- and 7-card hands):');
+  let fails = 0;
+  const fail = msg => { if (++fails <= 5) console.log('  FAIL ' + msg); };
+  if (bv.evaluateSuits !== bv._eval7) fail('evaluateSuits and _eval7 are not the same function');
+  if (bv.toSuitMasks !== bv._suitsOfCards) fail('toSuitMasks and _suitsOfCards are not the same function');
+  for (let it = 0; it < 300000; it++) {
+    const n = 5 + (it % 3), picked = new Set();
+    while (picked.size < n) picked.add((Math.random() * 52) | 0);
+    const idx = [...picked], cards = idx.map(i => DECK[i]);
+    const v = eval7OfIdx(idx);
+    const m = bv.toSuitMasks(cards);
+    if (bv.evaluateSuits(m[0], m[1], m[2], m[3]) !== v) fail(`evaluateSuits(toSuitMasks) ${cards}`);
+    if (bv.evaluateCards(cards) !== v) fail(`evaluateCards ${cards}`);
+    if (!(v >= 0 && v < 2 ** 24 && Number.isInteger(v))) fail(`value out of contract ${v} ${cards}`);
+    const refName = bv.getHandStrengthFromMask(bv.evaluate(maskOfIdx(idx))[0]);
+    if (bv.handCategory(v) !== refName) fail(`handCategory ${bv.handCategory(v)} vs ${refName} ${cards}`);
+  }
+  for (const bad of [['Xs'], ['A'], ['Asx'], [42]]) {
+    let threw = false; try { bv.evaluateCards(bad); } catch (e) { threw = true; }
+    if (!threw) fail(`evaluateCards should reject ${JSON.stringify(bad)}`);
+  }
+  console.log(`  ${fails === 0 ? 'PASS' : 'FAIL'}  public API matches _eval7 and evaluate() categories (${fails} failures)`);
+  allOk = fails === 0 && allOk;
+}
+
 console.log(`\n${allOk ? 'OK - _eval7 is order-equivalent to evaluate()' : 'FAILURE'}`);
 process.exit(allOk ? 0 : 1);
