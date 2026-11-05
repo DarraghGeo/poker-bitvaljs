@@ -7,14 +7,20 @@ High-performance poker hand evaluator optimized for browser environments, using 
 ## Features
 
 - **Fast hand evaluation** using four 13-bit suit lanes and plain 32-bit integers
-  (no BigInt in the hot path) — ~28–70× faster than the previous BigInt engine
-- **Exact range vs range equity** on the flop and turn via evaluate-once with
-  counting (byte-identical to brute force, no approximation)
-- **Exact, instant preflop** via an optional precomputed equity table
-  (`loadPreflopTable`) — replaces Monte Carlo entirely for preflop
-- **Monte Carlo** with confidence-interval early-stop for the remaining sampled
-  case (preflop with dead cards)
-- **Web Workers** for the Monte Carlo path
+  (no BigInt in the hot path)
+- **Exact range vs range equity on the flop and turn**: every hand is
+  evaluated once per runout and all matchups are counted at once — identical
+  to brute force, no approximation
+- **Exact, instant preflop equity** from a precomputed table that ships with
+  the package (`loadPreflopTable`)
+- **Monte Carlo** for everything else with 3+ cards to come (preflop with dead
+  cards, 1–2 card boards, or no table loaded), with confidence-interval
+  early-stop and an opt-in [shared-board mode](#shared-board-monte-carlo-opt-in)
+  that is typically 25–100× faster for range vs range
+- **[Combo weights](#combo-weights)**: `'KsKc:0.5'` or `{ hand, weight }`
+  range entries (PioSolver / GTO+ style)
+- **Web Workers** for Monte Carlo and large exact queries, falling back to the
+  main thread when workers aren't available
 - **Progress callbacks** with configurable update intervals
 - **Browser and Node.js compatible**
 
@@ -43,29 +49,51 @@ const [evaluation, kickers] = bitval.evaluate(handMask);
 ### Range vs Range Comparison
 
 ```javascript
+const fs = require('fs');
 const BitVal = require('poker-bitvaljs');
 const bitval = new BitVal();
 
-// Compare two ranges
-const heroHands = ['AsAh', 'AsAd', 'AsAc', 'AhAd', 'AhAc', 'AdAc']; // All AA combinations
-const villainHands = ['KsKh', 'KsKd', 'KsKc', 'KhKd', 'KhKc', 'KdKc']; // All KK combinations
+// Optional but recommended: exact, instant preflop equity (table ships with the package)
+bitval.loadPreflopTable(fs.readFileSync(require.resolve('poker-bitvaljs/bench/preflop-table.bin')));
+
+const heroHands = ['AsAh', 'AsAd', 'AsAc', 'AhAd', 'AhAc', 'AdAc']; // all AA combos
+const villainHands = ['KsKh', 'KsKd', 'KsKc', 'KhKd', 'KhKc', 'KdKc']; // all KK combos
 
 const result = await bitval.compareRange(
   heroHands,
   villainHands,
-  [], // board cards (empty for preflop)
-  [], // dead cards
-  5,  // number of board cards
-  10000, // iterations
-  true, // optimize (use canonical caching)
-  null, // progress callback (optional)
-  100, // progress interval (optional, default: 100)
-  true // use workers (optional, default: true)
+  [],    // board cards (empty for preflop)
+  [],    // dead cards
+  5,     // number of board cards
+  10000, // Monte Carlo iterations (only used when the answer isn't exact)
+  true,  // optimize (default; exact on the flop/turn and much faster)
+  null,  // progress callback (optional)
+  100,   // progress interval (optional, default: 100)
+  true   // use Web Workers (optional, default: true)
 );
 
-// Result: { win: 8120, tie: 30, lose: 1850 }
-// Calculate equity: (win + tie/2) / (win + tie + lose) * 100
+// result is { win, tie, lose }: matchup outcomes counted over all valid pairs
+const equity = (result.win + result.tie / 2) / (result.win + result.tie + result.lose) * 100;
 ```
+
+Ranges can also carry per-combo weights, e.g. `['KsKc:0.5', 'KhKd']` — see
+[Combo weights](#combo-weights).
+
+### In the Browser
+
+```html
+<script src="node_modules/poker-bitvaljs/bitval.js"></script>
+<script>
+  const bitval = new BitVal(); // also available as window.BitVal
+  fetch('node_modules/poker-bitvaljs/bench/preflop-table.bin')
+    .then(r => r.arrayBuffer())
+    .then(buf => bitval.loadPreflopTable(buf));
+</script>
+```
+
+`bitval-worker.js` is loaded from next to `bitval.js` for Web Workers; if you
+bundle or move the files, set `bitval.workerUrl`. Workers need an `http(s)`
+origin (see [Testing Locally](#testing-locally)).
 
 ### With Progress Callback
 
@@ -105,6 +133,9 @@ const result = await bitval.compareRange(
 ```
 
 ### With Board Cards (Postflop)
+
+With 3 or 4 board cards every runout is enumerated, so the result is exact and
+`iterations` is ignored.
 
 ```javascript
 // Compare ranges on a flop
@@ -148,18 +179,24 @@ Converts an array of card strings to a BigInt bitmask.
 
 ### `simulate(iterations, numberOfBoardCards, hero, villain, board, deadCards)`
 
-Simulates a single hand vs hand matchup.
+Simulates a single hand vs hand matchup. With 2 or fewer cards to come every
+runout is enumerated (exact; `iterations` is ignored); otherwise it samples.
+
+```javascript
+const r = bitval.simulate(100000, 5, ['As', 'Kd'], ['Qh', 'Qc'], [], []);
+```
 
 **Parameters:**
-- `iterations` (Number): Number of simulations
+- `iterations` (Number): Number of Monte Carlo samples
 - `numberOfBoardCards` (Number): Total board cards (default: 5)
-- `hero` (Array): Hero's hole cards as bitmask
-- `villain` (Array): Villain's hole cards as bitmask
-- `board` (Array): Board cards as bitmask
-- `deadCards` (Array): Dead cards as bitmask
+- `hero` (Array): Hero's hole cards as card strings (e.g. `['As', 'Kd']`)
+- `villain` (Array): Villain's hole cards as card strings
+- `board` (Array): Board cards as card strings (default: `[]`)
+- `deadCards` (Array): Dead cards as card strings (default: `[]`)
 
 **Returns:**
-- `{ win, tie, lose }`: Results object
+- `{ win, tie, lose, ... }`: Results object (it also has legacy hand-strength
+  fields such as `"Flush"`, which are always `0`)
 
 ### `compareRange(heroHands, villainHands, boardCards, deadCards, numberOfBoardCards, iterations, optimize, progressCallback, progressInterval, useWorkers, mcTargetPct)`
 
@@ -171,15 +208,24 @@ Compares two ranges of hands.
 - `boardCards` (Array): Board cards as strings (default: `[]`)
 - `deadCards` (Array): Dead cards as strings (default: `[]`)
 - `numberOfBoardCards` (Number): Total board cards (default: `5`)
-- `iterations` (Number): Monte Carlo samples per matchup (default: `10000`). Ignored on the flop/turn (exhaustive) and preflop-table paths, which are exact.
+- `iterations` (Number): Monte Carlo samples per matchup, or the maximum number of boards with `mcSharedBoards` (default: `10000`). Ignored on the flop/turn (exhaustive) and preflop-table paths, which are exact.
 - `optimize` (Boolean): Use the optimized path (default: `true`). On the flop/turn this is **exact** (byte-identical to `optimize: false`), just much faster.
 - `progressCallback` (Function): Optional callback `(current, total, message) => {}` (default: `null`)
 - `progressInterval` (Number): Update progress callback every N matchups (default: `100`)
 - `useWorkers` (Boolean): Use Web Workers (default: `true`) for Monte Carlo and for large exact flop/turn queries; small exact queries stay on the main thread.
-- `mcTargetPct` (Number): Monte Carlo early-stop target — stop sampling a matchup once its 95% confidence-interval half-width is within this many equity percentage points (default: `0.3`). Pass `0` to force the full `iterations`. Only affects the Monte Carlo (preflop) path.
+- `mcTargetPct` (Number): Monte Carlo early-stop target — stop sampling once the 95% confidence-interval half-width is within this many equity percentage points (default: `0.3`): per matchup by default, or for the aggregate equity with `mcSharedBoards`. Pass `0` to force the full `iterations`. Only affects Monte Carlo cases.
 
 **Returns:**
 - `Promise<{ win, tie, lose }>`: Results object. With combo weights these are weighted sums and can be fractional.
+
+### Instance options
+
+- `bitval.mcSharedBoards` (Boolean, default `false`): use
+  [shared-board Monte Carlo](#shared-board-monte-carlo-opt-in).
+- `bitval.workerUrl` (String): where to load `bitval-worker.js` from (defaults
+  to next to `bitval.js`).
+- `bitval.terminateWorkerPool()`: stop the Web Workers this instance created
+  (they are kept between calls for speed).
 
 ### `loadPreflopTable(buffer)`
 
@@ -271,8 +317,11 @@ directly comparable to the default mode; raw counts are not.
   runout; wide range-vs-range is resolved by counting. No ±0.5% approximation.
 - **Preflop: exact table lookup** (with `loadPreflopTable`) instead of Monte
   Carlo — effectively instant.
-- **Monte Carlo** (only preflop with dead cards) uses confidence-interval
-  early-stop and Web Workers.
+- **Monte Carlo** (3+ cards to come without a table answer: preflop with dead
+  cards, 1–2 card boards, or no table) uses confidence-interval early-stop and
+  Web Workers; `mcSharedBoards` makes range vs range typically 25–100× faster.
+- **Web Workers** also split large exact flop/turn queries across CPU cores;
+  small queries stay on the main thread, where they're faster.
 
 Reproduce the benchmarks with `node bench/pre-vs-post.js` and `npm run bench`;
 correctness with `npm test` (and `npm run test:full` for the exhaustive proofs).
