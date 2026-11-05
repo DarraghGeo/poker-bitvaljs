@@ -16,6 +16,17 @@
 Flop/turn also went from a ±0.5% approximation to **exact**; preflop went from
 Monte Carlo to an **exact table lookup**.
 
+## 1.8.0 — combo weights
+
+No speed changes intended: the kernel's per-hand multiplicities became
+weights (Float64), unweighted inputs take the same paths and return
+byte-identical results to 1.7.0, and timings are within noise of 1.7.0
+(40-run best-of: narrow ~1.8 ms, wide-238x238 ~13.6 ms, full x full flop
+~68 ms). `bench/weights.js` checks weighted exactness (optimized ==
+unoptimized == pair-by-pair reference, dyadic weights), equivalences,
+weighted preflop table lookups, input validation and (`--mc`) weighted Monte
+Carlo against the exact table.
+
 ## opt/7 (1.7.0) — radix kernel, preflop hash, kernel workers, shared-board MC
 
 Node, single-threaded, best-of-3 (same instance; table loaded where relevant):

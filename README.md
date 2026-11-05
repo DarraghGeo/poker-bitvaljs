@@ -166,8 +166,8 @@ Simulates a single hand vs hand matchup.
 Compares two ranges of hands.
 
 **Parameters:**
-- `heroHands` (Array): Array of hero hand strings (e.g., `['AsAh', 'AsAd']`)
-- `villainHands` (Array): Array of villain hand strings
+- `heroHands` (Array): Hero hands. Each entry is a hand string (`'AsAh'`), or a weighted hand (`'AsAh:0.5'` or `{ hand: 'AsAh', weight: 0.5 }`) — see [Combo weights](#combo-weights)
+- `villainHands` (Array): Villain hands, same formats
 - `boardCards` (Array): Board cards as strings (default: `[]`)
 - `deadCards` (Array): Dead cards as strings (default: `[]`)
 - `numberOfBoardCards` (Number): Total board cards (default: `5`)
@@ -179,7 +179,7 @@ Compares two ranges of hands.
 - `mcTargetPct` (Number): Monte Carlo early-stop target — stop sampling a matchup once its 95% confidence-interval half-width is within this many equity percentage points (default: `0.3`). Pass `0` to force the full `iterations`. Only affects the Monte Carlo (preflop) path.
 
 **Returns:**
-- `Promise<{ win, tie, lose }>`: Results object
+- `Promise<{ win, tie, lose }>`: Results object. With combo weights these are weighted sums and can be fractional.
 
 ### `loadPreflopTable(buffer)`
 
@@ -199,6 +199,27 @@ bitval.loadPreflopTable(fs.readFileSync(require.resolve('poker-bitvaljs/bench/pr
 ```
 
 Without a table loaded, preflop falls back to Monte Carlo — nothing else changes.
+
+### Combo weights
+
+Any range entry can carry a weight — how often that combo is in the range
+(e.g. KsKc played 50% of the time). Use the `'hand:weight'` form that solvers
+such as PioSolver and GTO+ export, or an object:
+
+```javascript
+const hero = ['KsKc:0.5', 'KhKd', { hand: 'AsKs', weight: 0.25 }];
+const villain = ['QsQh:0.75', 'JcJd'];
+const r = await bitval.compareRange(hero, villain, ['2c', '7d', '9h']);
+const equity = (r.win + r.tie / 2) / (r.win + r.tie + r.lose);
+```
+
+- A plain `'KhKd'` has weight `1`; weights are any finite number `>= 0`, and
+  `0` removes the hand. Listing a hand twice adds its weights.
+- Each valid hero/villain pair counts `heroWeight × villainWeight` times, so
+  `win`/`tie`/`lose` are weighted sums (fractional when weights are). Equity
+  is computed from them exactly as before.
+- Works on every path: exact flop/turn, the preflop table, both Monte Carlo
+  modes, Web Workers and `optimize: false`. Unweighted calls are unchanged.
 
 ### Shared-board Monte Carlo (opt-in)
 
@@ -221,6 +242,11 @@ In this mode `iterations` is the maximum number of **boards** sampled (shared by
 all matchups), `mcTargetPct` applies to the aggregate equity, and the returned
 `win`/`tie`/`lose` are summed over valid pairs × boards. Equity percentages are
 directly comparable to the default mode; raw counts are not.
+
+## Changes in 1.8.0
+
+- [Combo weights](#combo-weights): `'AsKs:0.5'` or `{ hand, weight }` range
+  entries, on every calculation path. Unweighted results are unchanged.
 
 ## Changes in 1.7.0
 

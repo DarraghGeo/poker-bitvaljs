@@ -606,21 +606,57 @@ class BitVal {
    * @returns {Promise<Object>} { win, tie, lose } - Results object
    */
   async compareRange(heroHands, villainHands, boardCards = [], deadCards = [], numberOfBoardCards = 5, iterations = 10000, optimize = true, progressCallback = null, progressInterval = 100, useWorkers = true, mcTargetPct = 0.3) {
+    // Combo weights: entries may be 'AsKs', 'AsKs:0.5' or { hand, weight }.
+    // weights === null means every hand has weight 1 (the unweighted path).
+    const hero = this._normalizeRange(heroHands), villain = this._normalizeRange(villainHands);
+    heroHands = hero.hands; villainHands = villain.hands;
+    const heroWeights = hero.weights, villainWeights = villain.weights;
+
     // Preflop exact fast path: if the preflop equity table is loaded and this is
     // a full-board preflop query with no dead cards, look up every matchup's
     // exact equity instead of Monte Carlo. Instant and exact.
     if (this._pfSlot && boardCards.length === 0 && deadCards.length === 0 && numberOfBoardCards === 5) {
-      const r = this._compareRangePreflopExact(heroHands, villainHands);
+      const r = this._compareRangePreflopExact(heroHands, villainHands, heroWeights, villainWeights);
       if (progressCallback) progressCallback(1, 1, 'Complete');
       return r;
     }
-    const setup = this._compareRangeSetup(heroHands, villainHands, boardCards, deadCards, numberOfBoardCards, iterations, optimize);
+    const setup = this._compareRangeSetup(heroHands, villainHands, boardCards, deadCards, numberOfBoardCards, iterations, optimize, heroWeights, villainWeights);
     // Monte Carlo early-stop target (95% CI half-width, in equity percentage
     // points). Default on; pass 0 to force full `iterations`. Ignored by the
     // exact (exhaustive) path. Only affects the remaining MC case (preflop with
     // dead cards, or preflop with no table loaded).
     setup.mcTarget = mcTargetPct;
     return optimize ? await this._compareRangeOptimized(setup, progressCallback, progressInterval, useWorkers) : await this._compareRangeUnoptimized(heroHands, villainHands, setup, progressCallback, progressInterval);
+  }
+
+  /**
+   * Normalizes a range for compareRange. Each entry is a hand string 'AsKs'
+   * (weight 1), a weighted string 'AsKs:0.5' (PioSolver / GTO+ style) or an
+   * object { hand: 'AsKs', weight: 0.5 }. Weights must be finite and >= 0;
+   * weight 0 drops the hand. Returns { hands, weights } where weights is a
+   * Float64Array parallel to hands, or null when every weight is 1.
+   * @private
+   */
+  _normalizeRange(range) {
+    const hands = [], w = [];
+    let weighted = false;
+    for (const entry of range) {
+      let hand, weight = 1;
+      if (typeof entry === 'string') {
+        const i = entry.indexOf(':');
+        if (i < 0) hand = entry;
+        else { hand = entry.slice(0, i).trim(); weight = Number(entry.slice(i + 1)); }
+      } else if (entry && typeof entry === 'object') {
+        hand = entry.hand;
+        if (entry.weight !== undefined) weight = Number(entry.weight);
+      }
+      if (typeof hand !== 'string' || hand.length !== 4) throw new Error(`Invalid range entry: ${JSON.stringify(entry)}`);
+      if (!Number.isFinite(weight) || weight < 0) throw new Error(`Invalid weight for ${hand}: ${JSON.stringify(entry)}`);
+      if (weight === 0) continue;
+      if (weight !== 1) weighted = true;
+      hands.push(hand); w.push(weight);
+    }
+    return { hands, weights: weighted ? Float64Array.from(w) : null };
   }
 
   /**
@@ -689,7 +725,7 @@ class BitVal {
    * villain) matchup's exact win/tie/lose over all C(48,5) boards.
    * @private
    */
-  _compareRangePreflopExact(heroHands, villainHands) {
+  _compareRangePreflopExact(heroHands, villainHands, heroWeights = null, villainWeights = null) {
     const total = this._pfTotal;
     const heroC = [], villC = [];
     for (const h of heroHands) heroC.push(this._cardIndex(h.slice(0, 2)), this._cardIndex(h.slice(2, 4)));
@@ -714,6 +750,7 @@ class BitVal {
         perms[np * 4] = p[0]; perms[np * 4 + 1] = p[1]; perms[np * 4 + 2] = p[2]; perms[np * 4 + 3] = p[3]; np++;
       }
       const hBase = bestH * 2704;
+      const hw = heroWeights ? heroWeights[hi >> 1] : 1;
       for (let vi = 0; vi < villC.length; vi += 2) {
         const v1 = villC[vi], v2 = villC[vi + 1];
         if (h1 === v1 || h1 === v2 || h2 === v1 || h2 === v2) continue; // conflicting hole cards
@@ -727,7 +764,12 @@ class BitVal {
         const idx = this._pfLookup(hBase + bestV);
         if (idx < 0) throw new Error('preflop table is missing a matchup (corrupt or incomplete table)');
         const w = pWin[idx], t = pTie[idx];
-        win += w; tie += t; lose += total - w - t;
+        if (heroWeights || villainWeights) {
+          const m = hw * (villainWeights ? villainWeights[vi >> 1] : 1);
+          win += w * m; tie += t * m; lose += (total - w - t) * m;
+        } else {
+          win += w; tie += t; lose += total - w - t;
+        }
       }
     }
     return { win, tie, lose };
@@ -1015,7 +1057,7 @@ class BitVal {
    * Each hand is parsed once; the O(H*V) overlap test runs on Number bitsets.
    * @private
    */
-  _generateValidMatchups(heroHands, villainHands, boardCards = []) {
+  _generateValidMatchups(heroHands, villainHands, boardCards = [], heroWeights = null, villainWeights = null) {
     const valid = [];
     const board = this._cardsBitset(boardCards);
     const nV = villainHands.length;
@@ -1026,13 +1068,14 @@ class BitVal {
       vOk[j] = ((p.lo & board.lo) | (p.hi & board.hi)) === 0 ? 1 : 0;
       vMask[j] = vOk[j] ? this.getBitMasked(this._handStringToCards(villainHands[j])) : 0n;
     }
-    for (const h of heroHands) {
-      const p = this._parseHand(h);
+    for (let i = 0; i < heroHands.length; i++) {
+      const h = heroHands[i], p = this._parseHand(h);
       if ((p.lo & board.lo) | (p.hi & board.hi)) continue;
       const hMask = this.getBitMasked(this._handStringToCards(h));
+      const hw = heroWeights ? heroWeights[i] : 1;
       for (let j = 0; j < nV; j++) {
         if (!vOk[j] || (p.lo & vLo[j]) | (p.hi & vHi[j])) continue;
-        valid.push({ heroHand: h, villainHand: villainHands[j], heroMask: hMask, villainMask: vMask[j] });
+        valid.push({ heroHand: h, villainHand: villainHands[j], heroMask: hMask, villainMask: vMask[j], weight: hw * (villainWeights ? villainWeights[j] : 1) });
       }
     }
     return valid;
@@ -1045,7 +1088,7 @@ class BitVal {
    * from the hand strings (see _buildExhaustiveWork).
    * @private
    */
-  _compareRangeSetup(heroHands, villainHands, boardCards, deadCards, numberOfBoardCards, iterations, optimize) {
+  _compareRangeSetup(heroHands, villainHands, boardCards, deadCards, numberOfBoardCards, iterations, optimize, heroWeights = null, villainWeights = null) {
     // Calculate bitmasks
     const boardMask = this.getBitMasked(boardCards);
     const deadCardsMask = this.getBitMasked([...boardCards, ...deadCards]);
@@ -1069,6 +1112,8 @@ class BitVal {
     return {
       heroHands,
       villainHands,
+      heroWeights,            // Float64Array parallel to heroHands, or null (all 1)
+      villainWeights,
       boardMask,
       deadCardsMask,
       iterations,
@@ -1081,7 +1126,7 @@ class BitVal {
       numberOfBoardCards,
       _validMatchups: null,
       get validMatchups() {
-        return this._validMatchups || (this._validMatchups = self._generateValidMatchups(heroHands, villainHands, boardCards));
+        return this._validMatchups || (this._validMatchups = self._generateValidMatchups(heroHands, villainHands, boardCards, heroWeights, villainWeights));
       }
     };
   }
@@ -1363,9 +1408,10 @@ class BitVal {
     const progressUpdateInterval = 100; // Update progress at most every 100ms
     
     for (let i = 0; i < total; i++) {
-      const { heroMask, villainMask } = setup.validMatchups[i];
+      const { heroMask, villainMask, weight } = setup.validMatchups[i];
       const { matchupWin, matchupTie, matchupLose } = await this._evaluateMatchup(heroMask, villainMask, setup, progressCallback, i, total);
-      win += matchupWin; tie += matchupTie; lose += matchupLose;
+      if (weight === 1) { win += matchupWin; tie += matchupTie; lose += matchupLose; }
+      else { win += matchupWin * weight; tie += matchupTie * weight; lose += matchupLose * weight; }
       
       if (progressCallback && i % progressInterval === 0) {
         const now = Date.now();
@@ -1453,7 +1499,7 @@ class BitVal {
           };
           groupOf.set(gk, g); groups.push(g);
         }
-        g.validCount++;
+        g.validCount += (setup.heroWeights ? setup.heroWeights[h] : 1) * (setup.villainWeights ? setup.villainWeights[v] : 1);
       }
     }
     return (setup._mcGroups = groups);
@@ -1528,10 +1574,10 @@ class BitVal {
     const board = this._cardsBitset(setup.boardCards);
     const uIndex = new Int32Array(52 * 52).fill(-1);
     const uSuitArr = [], uAArr = [], uBArr = [], uLoArr = [], uHiArr = [];
-    const addSide = (hands) => {
-      const u = [];
-      for (const hand of hands) {
-        const p = this._parseHand(hand);
+    const addSide = (hands, weights) => {
+      const u = [], wt = [];
+      for (let i = 0; i < hands.length; i++) {
+        const hand = hands[i], p = this._parseHand(hand);
         if ((p.lo & board.lo) | (p.hi & board.hi)) continue; // conflicts with board
         const key = p.a < p.b ? p.a * 52 + p.b : p.b * 52 + p.a;
         let ui = uIndex[key];
@@ -1541,17 +1587,21 @@ class BitVal {
           uSuitArr.push(s[0], s[1], s[2], s[3]);
           uAArr.push(p.a); uBArr.push(p.b); uLoArr.push(p.lo); uHiArr.push(p.hi);
         }
-        u.push(ui);
+        u.push(ui); wt.push(weights ? weights[i] : 1);
       }
-      return u;
+      return { u, wt };
     };
-    const heroU = addSide(setup.heroHands);
-    const villU = addSide(setup.villainHands);
+    const heroSide = addSide(setup.heroHands, setup.heroWeights);
+    const villSide = addSide(setup.villainHands, setup.villainWeights);
+    const heroU = heroSide.u, villU = villSide.u;
+    const weighted = !!(setup.heroWeights || setup.villainWeights);
     const U = uAArr.length;
     const uSuit = Int32Array.from(uSuitArr), uA = Int32Array.from(uAArr), uB = Int32Array.from(uBArr);
-    const hMult = new Int32Array(U), vMult = new Int32Array(U);
-    for (const u of heroU) hMult[u]++;
-    for (const u of villU) vMult[u]++;
+    // Per unique hand: total hero / villain weight (= multiplicity when
+    // unweighted; integer-valued doubles keep that path exact).
+    const hMult = new Float64Array(U), vMult = new Float64Array(U);
+    for (let i = 0; i < heroU.length; i++) hMult[heroU[i]] += heroSide.wt[i];
+    for (let i = 0; i < villU.length; i++) vMult[villU[i]] += villSide.wt[i];
     const nH = heroU.length, nV = villU.length;
     const bb = setup._boardSuits || (setup._boardSuits = this._suitsFromBigMask(setup.boardMask));
 
@@ -1564,24 +1614,27 @@ class BitVal {
     for (let u = 0; u < U; u++) { cardU[cfill[uA[u]]++] = u; cardU[cfill[uB[u]]++] = u; }
 
     const useCount = nH >= 16 && nV >= 16;
-    let pHa = null, pVa = null, P = 0, cardTotal = null;
+    let pHa = null, pVa = null, pW = null, P = 0, cardTotal = null;
     if (useCount) {
-      // cardTotal[c] = number of villain entries holding card c.
-      cardTotal = new Int32Array(52);
+      // cardTotal[c] = total villain weight holding card c.
+      cardTotal = new Float64Array(52);
       for (let u = 0; u < U; u++) { cardTotal[uA[u]] += vMult[u]; cardTotal[uB[u]] += vMult[u]; }
     } else {
-      const ph = [], pv = [];
-      for (const h of heroU) {
-        const hl = uLoArr[h], hh = uHiArr[h];
-        for (const v of villU) {
+      const ph = [], pv = [], pw = [];
+      for (let i = 0; i < heroU.length; i++) {
+        const h = heroU[i], hl = uLoArr[h], hh = uHiArr[h];
+        for (let j = 0; j < villU.length; j++) {
+          const v = villU[j];
           if ((hl & uLoArr[v]) | (hh & uHiArr[v])) continue;
           ph.push(h); pv.push(v);
+          if (weighted) pw.push(heroSide.wt[i] * villSide.wt[j]);
         }
       }
       pHa = Int32Array.from(ph); pVa = Int32Array.from(pv); P = pHa.length;
+      if (weighted) pW = Float64Array.from(pw);
     }
     return {
-      uSuit, uA, uB, hMult, vMult, U, nH, nV, useCount, pHa, pVa, P, cardTotal, cardUOff, cardU,
+      uSuit, uA, uB, hMult, vMult, U, nH, nV, useCount, pHa, pVa, pW, P, cardTotal, cardUOff, cardU,
       bb0: bb[0], bb1: bb[1], bb2: bb[2], bb3: bb[3]
     };
   }
@@ -1598,12 +1651,14 @@ class BitVal {
    * @private
    */
   _runExhaustive(work, comboSuits, runStart, runEnd) {
-    const { uSuit, uA, uB, hMult, vMult, U, nV, useCount, pHa, pVa, P, cardTotal, cardUOff, cardU, bb0, bb1, bb2, bb3 } = work;
+    const { uSuit, uA, uB, hMult, vMult, U, useCount, pHa, pVa, pW, P, cardTotal, cardUOff, cardU, bb0, bb1, bb2, bb3 } = work;
+    // Total villain weight (= villain entry count when unweighted).
+    let nV = 0; for (let u = 0; u < U; u++) nV += vMult[u];
     const uVals = new Int32Array(U);
     // dead[u] === i  <=>  hand u holds a card dealt in runout i, so it takes no
     // part in that runout (neither as hero nor as villain).
     const dead = new Int32Array(U).fill(-1);
-    const cardTot = useCount ? new Int32Array(52) : null;
+    const cardTot = useCount ? new Float64Array(52) : null;
     let win = 0, tie = 0, lose = 0;
 
     // Large-field scratch: live hand list, radix-sort buffers and counters,
@@ -1612,8 +1667,8 @@ class BitVal {
     const tmp = useCount ? new Int32Array(U) : null;
     const order = useCount ? new Int32Array(U) : null;
     const cnt = useCount ? new Int32Array(3 * 257) : null;
-    const lessC = useCount ? new Int32Array(52) : null;
-    const eqC = useCount ? new Int32Array(52) : null;
+    const lessC = useCount ? new Float64Array(52) : null;
+    const eqC = useCount ? new Float64Array(52) : null;
 
     for (let i = runStart; i < runEnd; i++) {
       const b = i << 2;
@@ -1648,7 +1703,9 @@ class BitVal {
         for (let p = 0; p < P; p++) {
           const hu = pHa[p], vu = pVa[p];
           if (dead[hu] === i || dead[vu] === i) continue;
-          const hv = uVals[hu], vv = uVals[vu]; if (hv > vv) win++; else if (vv > hv) lose++; else tie++;
+          const hv = uVals[hu], vv = uVals[vu];
+          if (pW) { const m = pW[p]; if (hv > vv) win += m; else if (vv > hv) lose += m; else tie += m; }
+          else if (hv > vv) win++; else if (vv > hv) lose++; else tie++;
         }
         continue;
       }
