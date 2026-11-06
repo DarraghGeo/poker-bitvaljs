@@ -505,7 +505,10 @@ directly comparable to the default mode; raw counts are not.
   small queries stay on the main thread, where they're faster.
 
 Reproduce the benchmarks with `node bench/pre-vs-post.js` and `npm run bench`;
-correctness with `npm test` (and `npm run test:full` for the exhaustive proofs).
+correctness with `npm test` (~10 s) and `npm run test:full` (~2.5 min, the
+exhaustive proofs, including every 7-card hand against the BigInt reference
+evaluator). Both run their scripts in parallel on all cores
+(`scripts/run-tests.js`; set `TEST_JOBS` to limit it).
 
 **Test performance and benchmark online:** [https://darraghgeo.github.io/poker-bitvaljs/](https://darraghgeo.github.io/poker-bitvaljs/)
 

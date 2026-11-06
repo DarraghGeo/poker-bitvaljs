@@ -12,6 +12,8 @@
 // and order mismatches). Exits non-zero on any divergence.
 
 const BitVal = require('../bitval.js');
+const { Worker, isMainThread, parentPort } = require('worker_threads');
+const os = require('os');
 const bv = new BitVal();
 
 // Per-index card data (index 0..51).
@@ -42,6 +44,8 @@ function makeChecker() {
       if (seen === undefined) { refToN.set(key, n); pairs.push({ ref, n }); }
       else if (seen !== n) { tieFails++; }
     },
+    export() { return { refs: pairs.map(p => p.ref), ns: pairs.map(p => p.n), tieFails }; },
+    tieFailsAdd(k) { tieFails += k; },
     verify(label) {
       pairs.sort((a, b) => (a.ref < b.ref ? -1 : a.ref > b.ref ? 1 : 0));
       const SF = 8 * 1048576; // category 8 = straight flush
@@ -72,20 +76,103 @@ function maskOfIdx(idxArr) { let m = 0n; for (const i of idxArr) m |= idxMask[i]
 
 let allOk = true;
 
+// Exhaustive 7-card enumeration for one (a0, a1) job, building the BigInt
+// and suit masks level by level (one OR per level instead of 7 per hand).
+function enumerateJob(a0, a1, add, cards = 7) {
+  let count = 0;
+  const m1 = idxMask[a0] | idxMask[a1];
+  const s1 = [0, 0, 0, 0]; s1[idxSuit[a0]] |= idxBit[a0]; s1[idxSuit[a1]] |= idxBit[a1];
+  if (cards === 5) {
+    for (let a2 = a1 + 1; a2 < 50; a2++) {
+      const m2 = m1 | idxMask[a2], s2 = s1.slice(); s2[idxSuit[a2]] |= idxBit[a2];
+      for (let a3 = a2 + 1; a3 < 51; a3++) {
+        const m3 = m2 | idxMask[a3], s3 = s2.slice(); s3[idxSuit[a3]] |= idxBit[a3];
+        for (let a4 = a3 + 1; a4 < 52; a4++) {
+          const su = idxSuit[a4], b = idxBit[a4];
+          add(refComposite(m3 | idxMask[a4]), bv._eval7(s3[0] | (su === 0 ? b : 0), s3[1] | (su === 1 ? b : 0), s3[2] | (su === 2 ? b : 0), s3[3] | (su === 3 ? b : 0)));
+          count++;
+        }
+      }
+    }
+    return count;
+  }
+  for (let a2 = a1 + 1; a2 < 48; a2++) {
+    const m2 = m1 | idxMask[a2], s2 = s1.slice(); s2[idxSuit[a2]] |= idxBit[a2];
+    for (let a3 = a2 + 1; a3 < 49; a3++) {
+      const m3 = m2 | idxMask[a3], s3 = s2.slice(); s3[idxSuit[a3]] |= idxBit[a3];
+      for (let a4 = a3 + 1; a4 < 50; a4++) {
+        const m4 = m3 | idxMask[a4], s4 = s3.slice(); s4[idxSuit[a4]] |= idxBit[a4];
+        for (let a5 = a4 + 1; a5 < 51; a5++) {
+          const m5 = m4 | idxMask[a5], s5 = s4.slice(); s5[idxSuit[a5]] |= idxBit[a5];
+          for (let a6 = a5 + 1; a6 < 52; a6++) {
+            const su = idxSuit[a6], b = idxBit[a6];
+            const n = bv._eval7(s5[0] | (su === 0 ? b : 0), s5[1] | (su === 1 ? b : 0), s5[2] | (su === 2 ? b : 0), s5[3] | (su === 3 ? b : 0));
+            add(refComposite(m5 | idxMask[a6]), n);
+            count++;
+          }
+        }
+      }
+    }
+  }
+  return count;
+}
+
+if (!isMainThread) {
+  // Worker: take jobs until told to finish, then send back the unique pairs.
+  const local = makeChecker();
+  let count = 0;
+  parentPort.on('message', msg => {
+    if (msg.finish) {
+      const { refs, ns, tieFails } = local.export();
+      parentPort.postMessage({ done: true, refs, ns, tieFails, count });
+      return;
+    }
+    if (msg.job) count += enumerateJob(msg.job[0], msg.job[1], (r, n) => local.add(r, n), msg.job[2]);
+    parentPort.postMessage({ want: true });
+  });
+  return;
+}
+
+// Runs every (a0, a1) job for `cards`-card hands on worker threads (largest
+// first, handed out as threads free up) and merges their unique
+// (reference key -> eval7) pairs into `chk`. Returns the number of hands.
+async function runParallel(cards, chk) {
+  const threads = Math.max(1, (os.availableParallelism ? os.availableParallelism() : os.cpus().length));
+  const jobs = [];
+  for (let a0 = 0; a0 < 52 - cards + 1; a0++) for (let a1 = a0 + 1; a1 < 52 - cards + 2; a1++) jobs.push([a0, a1, cards]);
+  const choose = (n, k) => { let r = 1; for (let i = 0; i < k; i++) r = r * (n - i) / (i + 1); return n < k ? 0 : r; };
+  jobs.sort((x, y) => choose(51 - y[1], cards - 2) - choose(51 - x[1], cards - 2));
+  let count = 0;
+  await new Promise((resolve, reject) => {
+    let next = 0, live = threads;
+    for (let t = 0; t < threads; t++) {
+      const w = new Worker(__filename, { argv: ['--worker'] });
+      w.on('message', msg => {
+        if (msg.done) {
+          for (let i = 0; i < msg.refs.length; i++) chk.add(msg.refs[i], msg.ns[i]);
+          chk.tieFailsAdd(msg.tieFails);
+          count += msg.count;
+          w.terminate();
+          if (--live === 0) resolve();
+          return;
+        }
+        if (next < jobs.length) w.postMessage({ job: jobs[next++] });
+        else w.postMessage({ finish: true });
+      });
+      w.on('error', reject);
+      w.postMessage({ ready: true });
+    }
+  });
+  return count;
+}
+
+(async () => {
+
 // ---- 1) ALL 5-card hands (exhaustive) ----
 {
   console.log('5-card hands (exhaustive, C(52,5)=2,598,960):');
   const chk = makeChecker();
-  let count = 0;
-  const a = [0, 0, 0, 0, 0];
-  for (a[0] = 0; a[0] < 48; a[0]++)
-    for (a[1] = a[0] + 1; a[1] < 49; a[1]++)
-      for (a[2] = a[1] + 1; a[2] < 50; a[2]++)
-        for (a[3] = a[2] + 1; a[3] < 51; a[3]++)
-          for (a[4] = a[3] + 1; a[4] < 52; a[4]++) {
-            chk.add(refComposite(maskOfIdx(a)), eval7OfIdx(a));
-            count++;
-          }
+  const count = await runParallel(5, chk);
   console.log(`  evaluated ${count.toLocaleString()} hands`);
   allOk = chk.verify('5-card order-equivalence') && allOk;
 }
@@ -97,18 +184,10 @@ let allOk = true;
   const chk = makeChecker();
   let count = 0;
   if (full) {
-    console.log('\n7-card hands (exhaustive, C(52,7)=133,784,560) — this takes minutes:');
-    const a = [0, 0, 0, 0, 0, 0, 0];
-    for (a[0] = 0; a[0] < 46; a[0]++)
-      for (a[1] = a[0] + 1; a[1] < 47; a[1]++)
-        for (a[2] = a[1] + 1; a[2] < 48; a[2]++)
-          for (a[3] = a[2] + 1; a[3] < 49; a[3]++)
-            for (a[4] = a[3] + 1; a[4] < 50; a[4]++)
-              for (a[5] = a[4] + 1; a[5] < 51; a[5]++)
-                for (a[6] = a[5] + 1; a[6] < 52; a[6]++) {
-                  chk.add(refComposite(maskOfIdx(a)), eval7OfIdx(a));
-                  count++;
-                }
+    // Exhaustive, split across worker threads by the first two cards; the
+    // merged pairs give exactly the check a single-threaded run would.
+    console.log('\n7-card hands (exhaustive, C(52,7)=133,784,560), all cores:');
+    count += await runParallel(7, chk);
   } else {
     const N = nArg ? parseInt(nArg, 10) : 5000000;
     console.log(`\n7-card hands (random sample, ${N.toLocaleString()}):`);
@@ -154,3 +233,4 @@ let allOk = true;
 
 console.log(`\n${allOk ? 'OK - _eval7 is order-equivalent to evaluate()' : 'FAILURE'}`);
 process.exit(allOk ? 0 : 1);
+})();
