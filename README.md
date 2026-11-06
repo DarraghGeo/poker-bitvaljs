@@ -95,8 +95,23 @@ Ranges can also carry per-combo weights, e.g. `['KsKc:0.5', 'KhKd']` — see
 </script>
 ```
 
-`bitval-worker.js` is loaded from next to `bitval.js` for Web Workers; if you
-bundle or move the files, set `bitval.workerUrl`. Workers need an `http(s)`
+As an ES module (no bundler needed), import `bitval.mjs`, the same code with
+`export`s:
+
+```html
+<script type="module">
+  import BitVal from './node_modules/poker-bitvaljs/bitval.mjs';
+  const bitval = new BitVal();
+</script>
+```
+
+With an import map (`"poker-bitvaljs": "/node_modules/poker-bitvaljs/bitval.mjs"`)
+or a bundler, `import BitVal from 'poker-bitvaljs'` works too: the package's
+`import` entry is `bitval.mjs` and its `require` entry `bitval.js`, so packages
+that use poker-bitvaljs (such as poker-extval) share one copy.
+
+`bitval-worker.js` is loaded from next to `bitval.js` (or `bitval.mjs`) for Web
+Workers; if you bundle or move the files, set `bitval.workerUrl`. Workers need an `http(s)`
 origin (see [Testing Locally](#testing-locally)).
 
 ### With Progress Callback
@@ -332,6 +347,14 @@ In this mode `iterations` is the maximum number of **boards** sampled (shared by
 all matchups), `mcTargetPct` applies to the aggregate equity, and the returned
 `win`/`tie`/`lose` are summed over valid pairs × boards. Equity percentages are
 directly comparable to the default mode; raw counts are not.
+
+## Changes in 1.10.0
+
+- ES-module entry: `bitval.mjs` (generated from `bitval.js`), used for
+  `import`, so browsers can load the package without a bundler and bundlers
+  share one copy between packages. `require` is unchanged. The package now has
+  an `exports` map listing `bitval.js`, `bitval.mjs`, `bitval-worker.js` and
+  `bench/preflop-table.bin`.
 
 ## Changes in 1.9.0
 
