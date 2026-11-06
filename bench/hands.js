@@ -122,6 +122,31 @@ function invariants(r, label) {
     }
   }
 
+  console.log('6) compareRangeHandsSync == compareRangeHands (exact paths), Monte Carlo within tolerance');
+  {
+    const full = (a, b) => a.win === b.win && a.tie === b.tie && a.lose === b.lose && sameSide(a.hero, b.hero) && sameSide(a.villain, b.villain);
+    for (let i = 0; i < 12; i++) {
+      const used = new Set(), board = [];
+      while (board.length < 3 + (i % 3)) { const c = DECK[rint(52)]; if (!used.has(c)) { used.add(c); board.push(c); } }
+      let hero = randomHands(i % 4 ? 20 + rint(40) : 2 + rint(4), new Set()), villain = randomHands(i % 4 ? 20 + rint(40) : 3 + rint(4), new Set());
+      if (i % 2) { hero = hero.map(h => `${h}:${DY[rint(DY.length)]}`); villain = villain.map(h => `${h}:${DY[rint(DY.length)]}`); }
+      const opt = i % 5 !== 4;
+      const r = bv.compareRangeHandsSync(hero, villain, board, [], 5, 1, opt);
+      ok(!(r instanceof Promise), 'compareRangeHandsSync returned a Promise');
+      ok(full(r, await bv.compareRangeHands(hero, villain, board, [], 5, 1, opt, null, 100, false)), `sync != async on ${board} (optimize=${opt})`);
+    }
+    if (ex._pfSlot) {
+      const hero = randomHands(30, new Set()), villain = randomHands(60, new Set());
+      ok(full(ex.compareRangeHandsSync(hero, villain), await ex.compareRangeHands(hero, villain)), 'preflop table: sync != async');
+      const e = r => (r.win + r.tie / 2) / (r.win + r.tie + r.lose) * 100;
+      const exact = e(await ex.compareRangeHands(hero, villain));
+      let calls = 0;
+      const mc = new BitVal().compareRangeHandsSync(hero, villain, [], [], 5, 100000, true, () => calls++, 100, false, 0);
+      ok(Math.abs(e(mc) - exact) <= 0.5, `sync Monte Carlo ${e(mc).toFixed(2)} vs exact ${exact.toFixed(2)}`);
+      ok(calls > 0, 'sync Monte Carlo never called progressCallback');
+    }
+  }
+
   console.log(`\n  checks: ${checks}, failures: ${fails}`);
   console.log(fails === 0 ? 'OK - per-hand results are exact and consistent' : `${fails} FAILURE(S)`);
   process.exit(fails === 0 ? 0 : 1);

@@ -16,7 +16,7 @@
 Flop/turn also went from a ±0.5% approximation to **exact**; preflop went from
 Monte Carlo to an **exact table lookup**.
 
-## 1.11.1 — fewer evaluations, class-level ordering, preflop per-pattern keys
+## 1.12.0 — fewer evaluations, class-level ordering, preflop per-pattern keys (+ compareRangeHandsSync)
 
 - **Rank-class evaluation reuse** (`_evalRunout`, all four kernels): the 5
   community cards have at most one suit with >= 3 cards; a hand that can't
@@ -31,7 +31,7 @@ Monte Carlo to an **exact table lookup**.
   hand's suit pattern, so each villain's minimized key is computed once per
   pattern and each matchup is one array load + the table lookup.
 
-Node, 1.11.0 → 1.11.1 (best-of): flop rainbow full vs full compareRange
+Node, 1.11.0 → 1.12.0 (best-of): flop rainbow full vs full compareRange
 63.5 → 40.5 ms, compareRangeHands 83.1 → 61.4 ms; two-tone 63.9 → 42.8 /
 81.5 → 64.0; monotone 65.0 → 48.3 / 82.0 → 66.6; squeeze vs wide 12.4 → 8.7 /
 16.6 → 12.2; 1 vs squeeze 2.1 → 1.3 / 2.1 → 1.4; turn full vs full 3.3 → 2.3 /

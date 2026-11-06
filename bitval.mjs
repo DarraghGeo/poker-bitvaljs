@@ -707,26 +707,10 @@ class BitVal {
    *   `hands` are the normalized hand strings (weight-0 entries removed).
    */
   async compareRangeHands(heroHands, villainHands, boardCards = [], deadCards = [], numberOfBoardCards = 5, iterations = 10000, optimize = true, progressCallback = null, progressInterval = 100, useWorkers = true, mcTargetPct = 0.3) {
-    const hero = this._normalizeRange(heroHands), villain = this._normalizeRange(villainHands);
-    const H = hero.hands, V = villain.hands, hw = hero.weights, vw = villain.weights;
-    const side = (hands, weights) => ({
-      hands, weights: weights || new Float64Array(hands.length).fill(1),
-      win: new Float64Array(hands.length), tie: new Float64Array(hands.length), lose: new Float64Array(hands.length)
-    });
-    const out = { win: 0, tie: 0, lose: 0, hero: side(H, hw), villain: side(V, vw) };
-
-    if (this._pfSlot && boardCards.length === 0 && deadCards.length === 0 && numberOfBoardCards === 5) {
-      const r = this._compareRangePreflopExact(H, V, hw, vw, out);
-      out.win = r.win; out.tie = r.tie; out.lose = r.lose;
-      if (progressCallback) progressCallback(1, 1, 'Complete');
-      return out;
-    }
-
-    const setup = this._compareRangeSetup(H, V, boardCards, deadCards, numberOfBoardCards, iterations, optimize, hw, vw);
-    setup.mcTarget = mcTargetPct;
-    setup.perHand = true;
+    const { out, setup } = this._handsBegin(heroHands, villainHands, boardCards, deadCards, numberOfBoardCards, iterations, optimize, progressCallback, mcTargetPct);
+    if (!setup) return out;
     if (!optimize) {
-      await this._compareRangeHandsUnoptimized(setup, out, progressCallback);
+      this._compareRangeHandsUnoptimized(setup, out, progressCallback);
       return out;
     }
 
@@ -751,6 +735,71 @@ class BitVal {
       const r = await this._compareRangeSharedBoards(setup, progressCallback, useWorkers);
       work = r.work; acc = r.hands;
     }
+    return this._handsFinish(out, work, acc);
+  }
+
+  /**
+   * Synchronous compareRangeHands: same arguments (useWorkers is ignored) and
+   * the same result, returned directly instead of as a Promise. Runs on the
+   * calling thread, so it never uses Web Workers; a progressCallback, if
+   * given, is called synchronously. Exact paths give identical results to
+   * compareRangeHands; Monte Carlo samples independently, like any two runs.
+   * @returns {Object} same shape as compareRangeHands
+   */
+  compareRangeHandsSync(heroHands, villainHands, boardCards = [], deadCards = [], numberOfBoardCards = 5, iterations = 10000, optimize = true, progressCallback = null, progressInterval = 100, useWorkers = false, mcTargetPct = 0.3) {
+    const { out, setup } = this._handsBegin(heroHands, villainHands, boardCards, deadCards, numberOfBoardCards, iterations, optimize, progressCallback, mcTargetPct);
+    if (!setup) return out;
+    if (!optimize) {
+      this._compareRangeHandsUnoptimized(setup, out, progressCallback);
+      return out;
+    }
+    let work, acc;
+    if (setup.isExhaustive) {
+      work = this._buildExhaustiveWork(setup);
+      const comboSuits = setup._comboSuits, nRun = comboSuits.length >> 2;
+      acc = this._runExhaustiveHands(work, comboSuits, 0, nRun);
+      if (progressCallback) progressCallback(nRun, nRun, 'Complete');
+    } else {
+      const plan = this._sharedBoardsPlan(setup, progressCallback);
+      if (!plan.empty) {
+        let batch;
+        while ((batch = plan.nextBatch())) plan.onResult(this._runExhaustiveHands(plan.work, batch, 0, batch.length >> 2), batch.length >> 2);
+      }
+      const r = plan.finish();
+      work = r.work; acc = r.hands;
+    }
+    return this._handsFinish(out, work, acc);
+  }
+
+  /**
+   * Shared start of compareRangeHands / compareRangeHandsSync: normalizes the
+   * ranges, allocates the result, and answers from the preflop table when it
+   * applies (setup is then null). Otherwise returns the per-hand setup.
+   * @private
+   */
+  _handsBegin(heroHands, villainHands, boardCards, deadCards, numberOfBoardCards, iterations, optimize, progressCallback, mcTargetPct) {
+    const hero = this._normalizeRange(heroHands), villain = this._normalizeRange(villainHands);
+    const H = hero.hands, V = villain.hands, hw = hero.weights, vw = villain.weights;
+    const side = (hands, weights) => ({
+      hands, weights: weights || new Float64Array(hands.length).fill(1),
+      win: new Float64Array(hands.length), tie: new Float64Array(hands.length), lose: new Float64Array(hands.length)
+    });
+    const out = { win: 0, tie: 0, lose: 0, hero: side(H, hw), villain: side(V, vw) };
+
+    if (this._pfSlot && boardCards.length === 0 && deadCards.length === 0 && numberOfBoardCards === 5) {
+      const r = this._compareRangePreflopExact(H, V, hw, vw, out);
+      out.win = r.win; out.tie = r.tie; out.lose = r.lose;
+      if (progressCallback) progressCallback(1, 1, 'Complete');
+      return { out, setup: null };
+    }
+    const setup = this._compareRangeSetup(H, V, boardCards, deadCards, numberOfBoardCards, iterations, optimize, hw, vw);
+    setup.mcTarget = mcTargetPct;
+    setup.perHand = true;
+    return { out, setup };
+  }
+
+  /** Copies per-unique-hand kernel totals into the per-entry result rows. @private */
+  _handsFinish(out, work, acc) {
     out.win = acc.win; out.tie = acc.tie; out.lose = acc.lose;
     const fill = (dst, entryU, w, t, l) => {
       for (let i = 0; i < entryU.length; i++) {
@@ -781,7 +830,7 @@ class BitVal {
    * own (the reference the optimized per-hand paths are tested against).
    * @private
    */
-  async _compareRangeHandsUnoptimized(setup, out, progressCallback = null) {
+  _compareRangeHandsUnoptimized(setup, out, progressCallback = null) {
     const { heroHands: H, villainHands: V, heroWeights, villainWeights } = setup;
     const board = this._cardsBitset(setup.boardCards);
     const parse = (hands) => hands.map(h => { const p = this._parseHand(h); return { lo: p.lo, hi: p.hi, ok: !((p.lo & board.lo) | (p.hi & board.hi)), mask: this.getBitMasked(this._handStringToCards(h)) }; });
@@ -2361,6 +2410,20 @@ class BitVal {
    * @private
    */
   async _compareRangeSharedBoards(setup, progressCallback = null, useWorkers = true) {
+    const plan = this._sharedBoardsPlan(setup, progressCallback);
+    if (!plan.empty) await this._runKernelBatches(plan.work, plan.nextBatch, plan.onResult, useWorkers, progressCallback);
+    return plan.finish();
+  }
+
+  /**
+   * The shared-board Monte Carlo as a plan: nextBatch() samples a batch of
+   * boards (null once the cap or the CI target is reached), onResult(r, n)
+   * folds a kernel result in, finish() returns the totals (and per-hand
+   * totals in per-hand mode). Run asynchronously (worker pool) by
+   * _compareRangeSharedBoards, or synchronously by compareRangeHandsSync.
+   * @private
+   */
+  _sharedBoardsPlan(setup, progressCallback = null) {
     const work = this._buildExhaustiveWork(setup);
     const acc = work.perHand ? this._emptyHandTotals(work.U) : null;
     const ex = this._cardsBitset([...setup.boardCards, ...(setup.deadCards || [])]);
@@ -2368,12 +2431,12 @@ class BitVal {
     for (let c = 0; c < 52; c++) if (!(c < 32 ? ex.lo & (1 << c) : ex.hi & (1 << (c - 32)))) deck.push(c);
     const pool = Int32Array.from(deck), poolLen = pool.length;
     const k = setup.numberOfCardsToDeal, total = setup.iterations;
-    if (k > poolLen || total <= 0) return acc ? { win: 0, tie: 0, lose: 0, work, hands: acc } : { win: 0, tie: 0, lose: 0 };
     const batchSize = Math.max(64, Math.min(1024, Math.ceil(total / 16)));
     const target = setup.mcTarget > 0 ? setup.mcTarget / 100 : 0;
     let st = new XorShift32().state;
     let issued = 0, done = 0, stop = false, win = 0, tie = 0, lose = 0;
     let nb = 0, sumEq = 0, sumEq2 = 0;
+    const empty = k > poolLen || total <= 0;
 
     const nextBatch = () => {
       if (stop || issued >= total) return null;
@@ -2401,10 +2464,13 @@ class BitVal {
       }
       if (progressCallback) progressCallback(done, total, `Sampled ${done.toLocaleString()} boards`);
     };
-    await this._runKernelBatches(work, nextBatch, onResult, useWorkers, progressCallback);
-    if (progressCallback) progressCallback(total, total, 'Complete');
-    return acc ? { win, tie, lose, work, hands: acc } : { win, tie, lose };
+    const finish = () => {
+      if (!empty && progressCallback) progressCallback(total, total, 'Complete');
+      return acc ? { win, tie, lose, work, hands: acc } : { win, tie, lose };
+    };
+    return { work, empty, nextBatch, onResult, finish };
   }
+
 
   /**
    * Returns `count` persistent workers, lazily growing the pool as needed.

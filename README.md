@@ -304,6 +304,19 @@ eq(r.hero, 0);  // AsKs's equity against the villain range
 - Cost: about 1.0–1.5× a plain `compareRange` (e.g. full range vs full range
   on a flop: ~40 ms → ~60 ms; one hand vs a range: the same).
 
+### `compareRangeHandsSync(...)`
+
+The same call and result as `compareRangeHands`, returned directly instead
+of as a Promise, for code that can't `await`:
+
+```javascript
+const r = bitval.compareRangeHandsSync(hero, villain, ['2c', '7d', '9h']);
+```
+
+It runs on the calling thread, so it never uses Web Workers (`useWorkers` is
+ignored) and blocks until done; a `progressCallback` is called synchronously.
+Exact results are identical to `compareRangeHands`.
+
 ### Instance options
 
 - `bitval.mcSharedBoards` (Boolean, default `false`): use
@@ -378,8 +391,10 @@ all matchups), `mcTargetPct` applies to the aggregate equity, and the returned
 `win`/`tie`/`lose` are summed over valid pairs × boards. Equity percentages are
 directly comparable to the default mode; raw counts are not.
 
-## Changes in 1.11.1
+## Changes in 1.12.0
 
+- [`compareRangeHandsSync`](#comparerangehandssync): synchronous
+  `compareRangeHands`.
 - Faster, same results: exact flop/turn `compareRange` 1.35–1.6×,
   `compareRangeHands` 1.25–1.5×, preflop table lookups 1.25–1.4×,
   shared-board Monte Carlo ~1.3×. Hands that can't make a flush on a runout
