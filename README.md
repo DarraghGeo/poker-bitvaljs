@@ -304,6 +304,46 @@ eq(r.hero, 0);  // AsKs's equity against the villain range
 - Cost: about 1.0–1.5× a plain `compareRange` (e.g. full range vs full range
   on a flop: ~40 ms → ~60 ms; one hand vs a range: the same).
 
+### Per-card and per-runout results (`byCard`, `byRunout`)
+
+On a flop or turn, `compareRangeHands` / `compareRangeHandsSync` can also
+return every hand's result for each next card and, on the flop, for each
+turn + river pair, from the same single pass. Pass an options object as the
+8th argument:
+
+```javascript
+const r = bitval.compareRangeHandsSync(hero, villain, ['Ks', '9d', '2c'], [], 5, 1, true,
+  { byCard: true, byRunout: true });
+
+const c = bitval.cardIndex('Jh');           // 37 ('2s' = 0 ... 'Ac' = 51)
+r.hero.byCard.win[i * 52 + c];               // hero hand i, turn = Jh (all rivers after it)
+const n = r.runouts.length / r.runoutSize;   // 1,176 on a flop with no dead cards
+r.hero.byRunout.win[i * n + k];              // hero hand i on runout k
+bitval.cardString(r.runouts[k * 2]);         // runout k's first card (flop: pairs a < b)
+```
+
+- `byCard` / `byRunout` are `{ win, tie, lose }` `Float64Array`s per side
+  (`r.hero`, `r.villain`), hand-major: `i * 52 + card` and `i * n + runout`.
+  Counts follow `compareRangeHands`: weighted by the other side's weights,
+  opposing combos holding a runout card drop out for it, a hand that meets
+  nothing on a card is exactly `0` / `0` / `0`.
+- `r.runouts` lists each runout's cards (`r.runoutSize` = 1 on the turn, 2 on
+  the flop) in card order; runouts use every card not on the board or dead.
+- Entries for a card that is on the board, dead, or in the hand itself (and
+  runouts using the hand's cards) are `NaN`; a hand that clashes with the
+  board has all-`NaN` rows.
+- Sums: `byRunout` rows (skipping `NaN`) sum to the hand's `win` / `tie` /
+  `lose`; so do turn `byCard` rows. On the flop each runout counts toward both
+  of its cards, so flop `byCard` rows sum to **2×** the totals.
+- Exact only: on a preflop, 1–2 card or river board these options throw.
+  Works with Web Workers (async) and `optimize: false`. The options object
+  may also carry `progressCallback`, `progressInterval`, `useWorkers`,
+  `mcTargetPct`.
+- Cost (Node, ~470 vs ~470 on a flop): ~50 ms plain, ~60 ms with `byCard`,
+  ~80 ms with both (vs ~0.5 s for one call per runout); a 300 vs 300 turn
+  takes ~3–5 ms. `byRunout` holds 3 × hands × runouts doubles per side
+  (~13 MB per side at 470 combos on a flop).
+
 ### `compareRangeHandsSync(...)`
 
 The same call and result as `compareRangeHands`, returned directly instead
@@ -390,6 +430,14 @@ In this mode `iterations` is the maximum number of **boards** sampled (shared by
 all matchups), `mcTargetPct` applies to the aggregate equity, and the returned
 `win`/`tie`/`lose` are summed over valid pairs × boards. Equity percentages are
 directly comparable to the default mode; raw counts are not.
+
+## Changes in 1.13.0
+
+- [`byCard` / `byRunout`](#per-card-and-per-runout-results-bycard-byrunout)
+  options for `compareRangeHands(Sync)`: each hand's result for every next
+  card and every flop runout, from one call.
+- `cardIndex(card)` / `cardString(index)` helpers.
+- `compareRangeHands(Sync)` accept an options object as the 8th argument.
 
 ## Changes in 1.12.0
 

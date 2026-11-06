@@ -1,6 +1,6 @@
 {
   "name": "poker-bitvaljs",
-  "version": "1.12.0",
+  "version": "1.13.0",
   "description": "High-performance poker hand evaluator optimized for browser environments, using bitwise operations for rapid poker hand analysis and equity calculations.",
   "main": "bitval.js",
   "module": "bitval.mjs",
@@ -17,8 +17,8 @@
     "./package.json": "./package.json"
   },
   "scripts": {
-    "test": "node bench/correctness.js && node bench/determinism.js && node bench/exact-optimize.js 300 && node bench/eval-equivalence.js 1000000 && node bench/simulate-equivalence.js && node bench/weights.js 30 && node bench/esm-equivalence.mjs && node bench/hands.js 30",
-    "test:full": "node bench/eval-equivalence.js --full && node bench/engine-differential.js && node bench/exact-optimize.js 2000 && node bench/mc-shared-board.js && node bench/weights.js 120 --mc && node bench/hands.js 120 --mc",
+    "test": "node bench/correctness.js && node bench/determinism.js && node bench/exact-optimize.js 300 && node bench/eval-equivalence.js 1000000 && node bench/simulate-equivalence.js && node bench/weights.js 30 && node bench/esm-equivalence.mjs && node bench/hands.js 30 && node bench/by-card.js 24",
+    "test:full": "node bench/eval-equivalence.js --full && node bench/engine-differential.js && node bench/exact-optimize.js 2000 && node bench/mc-shared-board.js && node bench/weights.js 120 --mc && node bench/hands.js 120 --mc && node bench/by-card.js 120",
     "test:equiv": "node bench/eval-equivalence.js",
     "test:exact": "node bench/exact-optimize.js",
     "test:differential": "node bench/engine-differential.js",
@@ -27,6 +27,7 @@
     "test:mc": "node bench/mc-shared-board.js",
     "test:weights": "node bench/weights.js",
     "test:hands": "node bench/hands.js",
+    "test:bycard": "node bench/by-card.js",
     "gen:preflop": "node bench/gen-preflop-table.js --out bench/preflop-table.bin",
     "bench": "node bench/bench.js",
     "bench:correct": "node bench/correctness.js",

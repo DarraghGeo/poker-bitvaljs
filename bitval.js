@@ -363,6 +363,29 @@ class BitVal {
   }
 
   /**
+   * Card number used by byCard / byRunout: rank * 4 + suit, ranks 2..A = 0..12,
+   * suits s, h, d, c = 0..3 ('2s' = 0 ... 'Ac' = 51). Throws on an invalid card.
+   * @param {String} card - e.g. 'Kd'
+   * @returns {Number} 0..51
+   */
+  cardIndex(card) {
+    const r = typeof card === 'string' && card.length === 2 ? this._RANK_CC[card.charCodeAt(0)] : -1;
+    const u = r >= 0 ? this._SUIT_CC[card.charCodeAt(1)] : -1;
+    if (!(r >= 0) || !(u >= 0)) throw new Error(`Invalid card: ${JSON.stringify(card)}`);
+    return r * 4 + u;
+  }
+
+  /**
+   * Card string for a card number from cardIndex (46 -> 'Kd').
+   * @param {Number} index - 0..51
+   * @returns {String}
+   */
+  cardString(index) {
+    if (!(index >= 0 && index < 52) || index !== (index | 0)) throw new Error(`Invalid card index: ${index}`);
+    return '23456789TJQKA'[index >> 2] + 'shdc'[index & 3];
+  }
+
+  /**
    * Decomposes a BigInt card-set mask into four 13-bit suit rank masks.
    * Used once per matchup / combo, never in the innermost loop.
    * @private
@@ -703,7 +726,9 @@ class BitVal {
    *   `hands` are the normalized hand strings (weight-0 entries removed).
    */
   async compareRangeHands(heroHands, villainHands, boardCards = [], deadCards = [], numberOfBoardCards = 5, iterations = 10000, optimize = true, progressCallback = null, progressInterval = 100, useWorkers = true, mcTargetPct = 0.3) {
-    const { out, setup } = this._handsBegin(heroHands, villainHands, boardCards, deadCards, numberOfBoardCards, iterations, optimize, progressCallback, mcTargetPct);
+    const o = this._handsOptions(progressCallback, progressInterval, useWorkers, mcTargetPct);
+    progressCallback = o.progressCallback; useWorkers = o.useWorkers;
+    const { out, setup } = this._handsBegin(heroHands, villainHands, boardCards, deadCards, numberOfBoardCards, iterations, optimize, progressCallback, o.mcTargetPct, o);
     if (!setup) return out;
     if (!optimize) {
       this._compareRangeHandsUnoptimized(setup, out, progressCallback);
@@ -714,19 +739,35 @@ class BitVal {
     if (setup.isExhaustive) {
       work = this._buildExhaustiveWork(setup);
       const comboSuits = setup._comboSuits, nRun = comboSuits.length >> 2;
-      if (useWorkers && typeof Worker !== 'undefined' && work.U * nRun >= this._EXACT_WORKER_THRESHOLD) {
+      let rows = null;
+      const pooled = useWorkers && typeof Worker !== 'undefined' && work.U * nRun >= this._EXACT_WORKER_THRESHOLD;
+      if (setup.rowsSpec) {
+        this._rowsOutputs(out, setup); work.rowsSpec = setup.rowsSpec;
+        rows = this._rowSink(work, nRun, out);
+        if (pooled) { rows.hero.T = null; rows.vill.T = null; } // batches bring their own T
+      }
+      if (pooled) {
         const nw = (typeof navigator !== 'undefined' && navigator.hardwareConcurrency) || 4;
         const chunk = Math.max(1, Math.ceil(nRun / nw));
         let next = 0, done = 0;
         acc = this._emptyHandTotals(work.U);
         await this._runKernelBatches(work,
-          () => { if (next >= nRun) return null; const a = next; next = Math.min(nRun, next + chunk); return comboSuits.slice(a * 4, next * 4); },
-          (r, n) => { this._addHandTotals(acc, r); done += n; if (progressCallback) progressCallback(done, nRun, `Evaluating runouts ${done}/${nRun}`); },
+          () => {
+            if (next >= nRun) return null;
+            const a = next; next = Math.min(nRun, next + chunk);
+            const batch = comboSuits.slice(a * 4, next * 4); batch.runOffset = a; return batch;
+          },
+          (r, n, batch) => {
+            this._addHandTotals(acc, r);
+            if (rows) this._mergeRows(rows, r.rows, batch.runOffset);
+            done += n; if (progressCallback) progressCallback(done, nRun, `Evaluating runouts ${done}/${nRun}`);
+          },
           true, progressCallback);
       } else {
-        acc = this._runExhaustiveHands(work, comboSuits, 0, nRun);
+        acc = this._runExhaustiveHands(work, comboSuits, 0, nRun, rows);
       }
       if (progressCallback) progressCallback(nRun, nRun, 'Complete');
+      if (rows) this._rowsFinish(out, setup, work, rows, !pooled);
     } else {
       const r = await this._compareRangeSharedBoards(setup, progressCallback, useWorkers);
       work = r.work; acc = r.hands;
@@ -743,7 +784,9 @@ class BitVal {
    * @returns {Object} same shape as compareRangeHands
    */
   compareRangeHandsSync(heroHands, villainHands, boardCards = [], deadCards = [], numberOfBoardCards = 5, iterations = 10000, optimize = true, progressCallback = null, progressInterval = 100, useWorkers = false, mcTargetPct = 0.3) {
-    const { out, setup } = this._handsBegin(heroHands, villainHands, boardCards, deadCards, numberOfBoardCards, iterations, optimize, progressCallback, mcTargetPct);
+    const o = this._handsOptions(progressCallback, progressInterval, useWorkers, mcTargetPct);
+    progressCallback = o.progressCallback;
+    const { out, setup } = this._handsBegin(heroHands, villainHands, boardCards, deadCards, numberOfBoardCards, iterations, optimize, progressCallback, o.mcTargetPct, o);
     if (!setup) return out;
     if (!optimize) {
       this._compareRangeHandsUnoptimized(setup, out, progressCallback);
@@ -753,8 +796,11 @@ class BitVal {
     if (setup.isExhaustive) {
       work = this._buildExhaustiveWork(setup);
       const comboSuits = setup._comboSuits, nRun = comboSuits.length >> 2;
-      acc = this._runExhaustiveHands(work, comboSuits, 0, nRun);
+      let rows = null;
+      if (setup.rowsSpec) { this._rowsOutputs(out, setup); work.rowsSpec = setup.rowsSpec; rows = this._rowSink(work, nRun, out); }
+      acc = this._runExhaustiveHands(work, comboSuits, 0, nRun, rows);
       if (progressCallback) progressCallback(nRun, nRun, 'Complete');
+      if (rows) this._rowsFinish(out, setup, work, rows);
     } else {
       const plan = this._sharedBoardsPlan(setup, progressCallback);
       if (!plan.empty) {
@@ -768,12 +814,133 @@ class BitVal {
   }
 
   /**
+   * compareRangeHands(Sync) accept an options object in place of the 8th
+   * argument (progressCallback): { byCard, byRunout, progressCallback,
+   * progressInterval, useWorkers, mcTargetPct }. Returns the normalized set.
+   * @private
+   */
+  _handsOptions(progressCallback, progressInterval, useWorkers, mcTargetPct) {
+    if (progressCallback && typeof progressCallback === 'object') {
+      const opt = progressCallback;
+      return {
+        progressCallback: opt.progressCallback || null,
+        progressInterval: opt.progressInterval !== undefined ? opt.progressInterval : progressInterval,
+        useWorkers: opt.useWorkers !== undefined ? opt.useWorkers : useWorkers,
+        mcTargetPct: opt.mcTargetPct !== undefined ? opt.mcTargetPct : mcTargetPct,
+        byCard: !!opt.byCard, byRunout: !!opt.byRunout
+      };
+    }
+    return { progressCallback, progressInterval, useWorkers, mcTargetPct, byCard: false, byRunout: false };
+  }
+
+  /**
+   * Allocates byCard / byRunout outputs on both sides of `out` (hand-major:
+   * byCard[i * 52 + c], byRunout[i * nRun + r]) and out.runouts /
+   * out.runoutSize.
+   * @private
+   */
+  _rowsOutputs(out, setup) {
+    const comboSuits = setup._comboSuits, nRun = comboSuits.length >> 2, k = setup.numberOfCardsToDeal;
+    const runouts = new Uint8Array(nRun * k), rc = [-1, -1];
+    for (let i = 0; i < nRun; i++) { this._runoutCards(comboSuits, i << 2, rc); for (let j = 0; j < k; j++) runouts[i * k + j] = rc[j]; }
+    out.runouts = runouts; out.runoutSize = k;
+    const { byCard, byRunout } = setup.rowsSpec;
+    for (const side of [out.hero, out.villain]) {
+      const n = side.hands.length;
+      if (byCard) side.byCard = this._rowBufs(n * 52);
+      if (byRunout) side.byRunout = this._rowBufs(n * nRun);
+    }
+    return nRun;
+  }
+
+  /** Merges a batch sink (from a worker or local batch) at runout `offset`: T straight into the outputs, C added. @private */
+  _mergeRows(main, part, offset) {
+    for (const [dst, src] of [[main.hero, part.hero], [main.vill, part.vill]]) {
+      if (dst.dst) this._transposeRows(dst.dst, dst.ci, src.T, dst.n, offset, part.nRun, main.nRun);
+      if (dst.C) for (const f of ['win', 'tie', 'lose']) { const a = dst.C[f], b = src.C[f]; for (let i = 0; i < a.length; i++) a[i] += b[i]; }
+    }
+  }
+
+  /**
+   * Transposes the whole-run sink into the public hand-major outputs
+   * (expanding unique hands to their entries), then marks NaN entries.
+   * @private
+   */
+  _rowsFinish(out, setup, work, sink, drain = true) {
+    // Main-thread runs leave a partly filled last block; worker merges don't.
+    if (drain && sink.hero.dst) { const left = sink.offset + sink.nRun - sink.blockStart; if (left > 0) this._sinkDrain(sink, left); }
+    for (const [dst, src, entryU, cidx] of [[out.hero, sink.hero, work.heroEntryU, work.hC], [out.villain, sink.vill, work.villEntryU, work.vC]]) {
+      if (!dst.byCard) continue;
+      const n = src.n, nE = dst.hands.length;
+      const Cw = src.C.win, Ct = src.C.tie, Cl = src.C.lose, Dw = dst.byCard.win, Dt = dst.byCard.tie, Dl = dst.byCard.lose;
+      for (let e = 0; e < nE; e++) {
+        const c = entryU[e] >= 0 ? cidx[entryU[e]] : -1; if (c < 0) continue;
+        for (let k = 0, q = e * 52, p = c; k < 52; k++, q++, p += n) { Dw[q] = Cw[p]; Dt[q] = Ct[p]; Dl[q] = Cl[p]; }
+      }
+    }
+    this._rowsNaN(out, setup);
+  }
+
+
+
+  /**
+   * Marks impossible entries NaN: byCard for board / dead cards and the hand's
+   * own cards, byRunout for runouts using the hand's cards, and every row of a
+   * hand that clashes with the board.
+   * @private
+   */
+  _rowsNaN(out, setup) {
+    // blocked: cards that can't come (board, dead). Only a BOARD card in the
+    // hand makes it impossible; a hand holding a dead card still plays (as in
+    // compareRange), so only that card's column is NaN.
+    const blocked = new Uint8Array(52), onBoard = new Uint8Array(52);
+    for (const c of setup.boardCards) { blocked[this._cardIndex(c)] = 1; onBoard[this._cardIndex(c)] = 1; }
+    for (const c of setup.deadCards || []) blocked[this._cardIndex(c)] = 1;
+    const k = out.runoutSize, runouts = out.runouts, nRun = runouts.length / k;
+    // runoutsOf[card] = the runouts containing that card (CSR), so a hand only
+    // visits the runouts that use its own cards.
+    const roOff = new Int32Array(53);
+    for (let i = 0; i < runouts.length; i++) roOff[runouts[i] + 1]++;
+    for (let c = 0; c < 52; c++) roOff[c + 1] += roOff[c];
+    const roList = new Int32Array(runouts.length), fill = roOff.slice(0, 52);
+    for (let r = 0; r < nRun; r++) for (let j = 0; j < k; j++) roList[fill[runouts[r * k + j]]++] = r;
+    const nan = (g, q) => { g.win[q] = NaN; g.tie[q] = NaN; g.lose[q] = NaN; };
+    for (const side of [out.hero, out.villain]) {
+      for (let i = 0; i < side.hands.length; i++) {
+        const a = this._cardIndex(side.hands[i]), b = this._cardIndex(side.hands[i].substring(2, 4));
+        if (onBoard[a] || onBoard[b]) { // impossible hand: whole rows NaN
+          if (side.byCard) for (const f of ['win', 'tie', 'lose']) side.byCard[f].fill(NaN, i * 52, i * 52 + 52);
+          if (side.byRunout) for (const f of ['win', 'tie', 'lose']) side.byRunout[f].fill(NaN, i * nRun, i * nRun + nRun);
+          continue;
+        }
+        if (side.byCard) {
+          const q = i * 52;
+          for (let c = 0; c < 52; c++) if (blocked[c]) nan(side.byCard, q + c);
+          nan(side.byCard, q + a); nan(side.byCard, q + b);
+        }
+        if (side.byRunout) {
+          const q = i * nRun;
+          for (const c of [a, b]) for (let t = roOff[c], e = roOff[c + 1]; t < e; t++) nan(side.byRunout, q + roList[t]);
+        }
+      }
+    }
+  }
+
+
+  /**
    * Shared start of compareRangeHands / compareRangeHandsSync: normalizes the
    * ranges, allocates the result, and answers from the preflop table when it
    * applies (setup is then null). Otherwise returns the per-hand setup.
    * @private
    */
-  _handsBegin(heroHands, villainHands, boardCards, deadCards, numberOfBoardCards, iterations, optimize, progressCallback, mcTargetPct) {
+  _handsBegin(heroHands, villainHands, boardCards, deadCards, numberOfBoardCards, iterations, optimize, progressCallback, mcTargetPct, opts = null) {
+    const wantRows = !!(opts && (opts.byCard || opts.byRunout));
+    if (wantRows) {
+      const toCome = numberOfBoardCards - boardCards.length;
+      if (toCome !== 1 && toCome !== 2) {
+        throw new Error('byCard / byRunout need an exact flop or turn calculation (1 or 2 board cards to come)');
+      }
+    }
     const hero = this._normalizeRange(heroHands), villain = this._normalizeRange(villainHands);
     const H = hero.hands, V = villain.hands, hw = hero.weights, vw = villain.weights;
     const side = (hands, weights) => ({
@@ -791,6 +958,7 @@ class BitVal {
     const setup = this._compareRangeSetup(H, V, boardCards, deadCards, numberOfBoardCards, iterations, optimize, hw, vw);
     setup.mcTarget = mcTargetPct;
     setup.perHand = true;
+    if (wantRows) setup.rowsSpec = { byCard: !!opts.byCard, byRunout: !!opts.byRunout };
     return { out, setup };
   }
 
@@ -806,6 +974,51 @@ class BitVal {
     fill(out.hero, work.heroEntryU, acc.hw, acc.ht, acc.hl);
     fill(out.villain, work.villEntryU, acc.vw, acc.vt, acc.vl);
     return out;
+  }
+
+  /**
+   * optimize:false with byCard / byRunout: every valid pair, every runout,
+   * evaluated on its own (the reference the optimized rows are tested
+   * against).
+   * @private
+   */
+  _compareRangeHandsRowsUnoptimized(setup, out, progressCallback = null) {
+    const { heroHands: H, villainHands: V, heroWeights, villainWeights } = setup;
+    const comboSuits = setup._comboSuits, nRun = comboSuits.length >> 2;
+    this._rowsOutputs(out, setup);
+    const add = (side, row, r, rc, w, t, l) => {
+      if (side.byRunout) { const q = row * nRun + r; side.byRunout.win[q] += w; side.byRunout.tie[q] += t; side.byRunout.lose[q] += l; }
+      if (side.byCard) for (const c of rc) if (c >= 0) { const q = row * 52 + c; side.byCard.win[q] += w; side.byCard.tie[q] += t; side.byCard.lose[q] += l; }
+    };
+    const board = this._cardsBitset(setup.boardCards), bb = this._suitsOfCards(setup.boardCards);
+    const parse = hands => hands.map(h => { const p = this._parseHand(h); return { lo: p.lo, hi: p.hi, ok: !((p.lo & board.lo) | (p.hi & board.hi)), s: this._suitsOfCards([h.substring(0, 2), h.substring(2, 4)]) }; });
+    const hp = parse(H), vp = parse(V), rc = [-1, -1];
+    const runLo = new Int32Array(nRun), runHi = new Int32Array(nRun);
+    for (let r = 0; r < nRun; r++) { this._runoutCards(comboSuits, r << 2, rc); for (const c of rc) if (c >= 0) { if (c < 32) runLo[r] |= 1 << c; else runHi[r] |= 1 << (c - 32); } }
+    for (let i = 0; i < H.length; i++) {
+      if (!hp[i].ok) continue;
+      const hwi = heroWeights ? heroWeights[i] : 1, hs = hp[i].s;
+      for (let j = 0; j < V.length; j++) {
+        if (!vp[j].ok || (hp[i].lo & vp[j].lo) | (hp[i].hi & vp[j].hi)) continue;
+        const vwj = villainWeights ? villainWeights[j] : 1, vs = vp[j].s;
+        for (let r = 0; r < nRun; r++) {
+          if ((runLo[r] & (hp[i].lo | vp[j].lo)) | (runHi[r] & (hp[i].hi | vp[j].hi))) continue;
+          const b = r << 2;
+          const d0 = bb[0] | comboSuits[b], d1 = bb[1] | comboSuits[b + 1], d2 = bb[2] | comboSuits[b + 2], d3 = bb[3] | comboSuits[b + 3];
+          const he = this._eval7(hs[0] | d0, hs[1] | d1, hs[2] | d2, hs[3] | d3), ve = this._eval7(vs[0] | d0, vs[1] | d1, vs[2] | d2, vs[3] | d3);
+          const hw = he > ve ? vwj : 0, ht = he === ve ? vwj : 0, hl = he < ve ? vwj : 0;
+          this._runoutCards(comboSuits, b, rc);
+          add(out.hero, i, r, rc, hw, ht, hl);
+          add(out.villain, j, r, rc, he < ve ? hwi : 0, he === ve ? hwi : 0, he > ve ? hwi : 0);
+          out.hero.win[i] += hw; out.hero.tie[i] += ht; out.hero.lose[i] += hl;
+          out.villain.win[j] += he < ve ? hwi : 0; out.villain.tie[j] += he === ve ? hwi : 0; out.villain.lose[j] += he > ve ? hwi : 0;
+          const m = hwi * vwj;
+          if (he > ve) out.win += m; else if (he < ve) out.lose += m; else out.tie += m;
+        }
+      }
+      if (progressCallback) progressCallback(i + 1, H.length, `Hero hand ${i + 1}/${H.length}`);
+    }
+    this._rowsNaN(out, setup);
   }
 
   /** Zeroed per-hand accumulator for U unique hands. @private */
@@ -827,6 +1040,7 @@ class BitVal {
    * @private
    */
   _compareRangeHandsUnoptimized(setup, out, progressCallback = null) {
+    if (setup.rowsSpec) return this._compareRangeHandsRowsUnoptimized(setup, out, progressCallback);
     const { heroHands: H, villainHands: V, heroWeights, villainWeights } = setup;
     const board = this._cardsBitset(setup.boardCards);
     const parse = (hands) => hands.map(h => { const p = this._parseHand(h); return { lo: p.lo, hi: p.hi, ok: !((p.lo & board.lo) | (p.hi & board.hi)), mask: this.getBitMasked(this._handStringToCards(h)) }; });
@@ -1895,6 +2109,13 @@ class BitVal {
     return {
       uSuit, uA, uB, hMult, vMult, U, nH, nV, useCount, pHa, pVa, pW, P, cardTotal, cardUOff, cardU,
       perHand, cardTotalH, uCls,
+      // Compact per-side index of each unique hand (-1 if not on that side),
+      // used by byCard / byRunout row buffers.
+      ...(perHand ? (() => {
+        const hC = new Int32Array(U).fill(-1), vC = new Int32Array(U).fill(-1); let nHC = 0, nVC = 0;
+        for (let u = 0; u < U; u++) { if (hMult[u]) hC[u] = nHC++; if (vMult[u]) vC[u] = nVC++; }
+        return { hC, vC, nHC, nVC };
+      })() : {}),
       heroEntryU: perHand ? heroSide.entryU : null, villEntryU: perHand ? villSide.entryU : null,
       bb0: bb[0], bb1: bb[1], bb2: bb[2], bb3: bb[3]
     };
@@ -2082,14 +2303,22 @@ class BitVal {
    * (no subtraction, so no residue), mirroring _runExhaustive's direct path.
    * @private
    */
-  _runExhaustiveHandsDirect(work, comboSuits, runStart, runEnd) {
+  _runExhaustiveHandsDirect(work, comboSuits, runStart, runEnd, sink = null) {
     const { uSuit, hMult, vMult, U, pHa, pVa, P, cardUOff, cardU, bb0, bb1, bb2, bb3 } = work;
     const hw = new Float64Array(U), ht = new Float64Array(U), hl = new Float64Array(U);
     const vw = new Float64Array(U), vt = new Float64Array(U), vl = new Float64Array(U);
     const uVals = new Int32Array(U), dead = new Int32Array(U).fill(-1), sc = this._runoutScratch(U);
     let win = 0, tie = 0, lose = 0;
+    // Per-runout rows (byCard / byRunout), see _rowSink.
+    const own = !sink && work.rowsSpec ? this._rowSink(work, runEnd - runStart) : null;
+    if (own) sink = own;
+    const hC = work.hC, vC = work.vC;
+    const hcw = sink ? sink.hero.cur.win : null, hct = sink ? sink.hero.cur.tie : null, hcl = sink ? sink.hero.cur.lose : null;
+    const vcw = sink ? sink.vill.cur.win : null, vct = sink ? sink.vill.cur.tie : null, vcl = sink ? sink.vill.cur.lose : null;
+    const rc = [-1, -1];
     for (let i = runStart; i < runEnd; i++) {
       const b = i << 2;
+      if (sink) { hcw.fill(0); hct.fill(0); hcl.fill(0); vcw.fill(0); vct.fill(0); vcl.fill(0); }
       for (let s = 0; s < 4; s++) {
         let m = comboSuits[b + s];
         while (m) {
@@ -2103,12 +2332,13 @@ class BitVal {
         const hu = pHa[p], vu = pVa[p];
         if (dead[hu] === i || dead[vu] === i) continue;
         const hv = uVals[hu], vv = uVals[vu], hm = hMult[hu], vm = vMult[vu];
-        if (hv > vv) { hw[hu] += vm; vl[vu] += hm; win += hm * vm; }
-        else if (vv > hv) { hl[hu] += vm; vw[vu] += hm; lose += hm * vm; }
-        else { ht[hu] += vm; vt[vu] += hm; tie += hm * vm; }
+        if (hv > vv) { hw[hu] += vm; vl[vu] += hm; win += hm * vm; if (sink) { hcw[hC[hu]] += vm; vcl[vC[vu]] += hm; } }
+        else if (vv > hv) { hl[hu] += vm; vw[vu] += hm; lose += hm * vm; if (sink) { hcl[hC[hu]] += vm; vcw[vC[vu]] += hm; } }
+        else { ht[hu] += vm; vt[vu] += hm; tie += hm * vm; if (sink) { hct[hC[hu]] += vm; vct[vC[vu]] += hm; } }
       }
+      if (sink) { this._runoutCards(comboSuits, b, rc); this._sinkFlush(sink, i - runStart + sink.offset, rc); }
     }
-    return { win, tie, lose, hw, ht, hl, vw, vt, vl };
+    return own ? { win, tie, lose, hw, ht, hl, vw, vt, vl, rows: own } : { win, tie, lose, hw, ht, hl, vw, vt, vl };
   }
 
   /**
@@ -2120,8 +2350,14 @@ class BitVal {
    * compareRange's kernel is untouched.
    * @private
    */
-  _runExhaustiveHands(work, comboSuits, runStart, runEnd) {
-    if (!work.useCount) return this._runExhaustiveHandsDirect(work, comboSuits, runStart, runEnd);
+  _runExhaustiveHands(work, comboSuits, runStart, runEnd, sink = null) {
+    if (!work.useCount) return this._runExhaustiveHandsDirect(work, comboSuits, runStart, runEnd, sink);
+    // Per-runout rows (byCard / byRunout), see _rowSink.
+    const own = !sink && work.rowsSpec ? this._rowSink(work, runEnd - runStart) : null;
+    if (own) sink = own;
+    const rc = [-1, -1], hC = work.hC, vC = work.vC;
+    const hcw = sink ? sink.hero.cur.win : null, hct = sink ? sink.hero.cur.tie : null, hcl = sink ? sink.hero.cur.lose : null;
+    const vcw = sink ? sink.vill.cur.win : null, vct = sink ? sink.vill.cur.tie : null, vcl = sink ? sink.vill.cur.lose : null;
     const { uSuit, uA, uB, hMult, vMult, U, cardTotal, cardTotalH, cardUOff, cardU, bb0, bb1, bb2, bb3 } = work;
     let nV = 0, nH = 0, snapV = Infinity, snapH = Infinity;
     for (let u = 0; u < U; u++) {
@@ -2143,6 +2379,7 @@ class BitVal {
 
     for (let i = runStart; i < runEnd; i++) {
       const b = i << 2;
+      if (sink) { hcw.fill(0); hct.fill(0); hcl.fill(0); vcw.fill(0); vct.fill(0); vcl.fill(0); }
       // Hands holding a runout card sit this runout out, on both sides.
       let nVi = nV, nHi = nH;
       cardTotV.set(cardTotal); cardTotH.set(cardTotalH);
@@ -2187,6 +2424,7 @@ class BitVal {
             if (l < snapV) l = 0;
             hw[u] += w; ht[u] += t; hl[u] += l;
             win += w * hm; tie += t * hm; lose += l * hm;
+            if (sink) { const ci = hC[u]; hcw[ci] = w; hct[ci] = t; hcl[ci] = l; }
           }
           if (vm) { // u as a villain, against the hero range
             let w = belowH - lessH[a] - lessH[c];
@@ -2196,6 +2434,7 @@ class BitVal {
             if (t < snapH) t = 0;
             if (l < snapH) l = 0;
             vw[u] += w; vt[u] += t; vl[u] += l;
+            if (sink) { const ci = vC[u]; vcw[ci] = w; vct[ci] = t; vcl[ci] = l; }
           }
         }
         for (let k = g; k < e; k++) {
@@ -2207,9 +2446,90 @@ class BitVal {
         belowV += eqTotV; belowH += eqTotH;
         g = e;
       }
+      if (sink) { this._runoutCards(comboSuits, b, rc); this._sinkFlush(sink, i - runStart + sink.offset, rc); }
     }
-    return { win, tie, lose, hw, ht, hl, vw, vt, vl };
+    return own ? { win, tie, lose, hw, ht, hl, vw, vt, vl, rows: own } : { win, tie, lose, hw, ht, hl, vw, vt, vl };
   }
+
+  /** The 1-2 cards (card indices) of the runout at comboSuits[b..b+3] into rc. @private */
+  _runoutCards(comboSuits, b, rc) {
+    rc[0] = -1; rc[1] = -1;
+    let n = 0;
+    for (let s = 0; s < 4; s++) {
+      let m = comboSuits[b + s];
+      while (m) { const low = m & -m; m ^= low; rc[n++] = (31 - Math.clz32(low)) * 4 + s; }
+    }
+  }
+
+  /**
+   * Row buffers for byCard / byRunout, per side, indexed by the side's compact
+   * hand index (work.hC / work.vC). `cur` holds the current runout's counts;
+   * _sinkFlush copies it into `T` (runout-major, contiguous) and adds it into
+   * `C` (card-major). With `out` (main thread) T is a 64-runout block that is
+   * transposed straight into out's hand-major byRunout rows whenever it fills
+   * (_sinkDrain), so no full-size temporary is ever allocated; without it (a
+   * worker / async batch) T holds the whole batch for the caller to merge.
+   * @private
+   */
+  _rowSink(work, nRun, out = null, offset = 0) {
+    const { byCard, byRunout } = work.rowsSpec;
+    const block = out ? Math.min(64, nRun) : nRun;
+    const side = (n, dst, entryU, cidx) => {
+      const sd = { n, cur: this._rowBufs(n), T: byRunout ? this._rowBufs(block * n) : null, C: byCard ? this._rowBufs(52 * n) : null, dst: null, ci: null };
+      if (out && byRunout) {
+        const nE = dst.hands.length, ci = new Int32Array(nE);
+        for (let e = 0; e < nE; e++) ci[e] = entryU[e] >= 0 ? cidx[entryU[e]] : -1;
+        sd.dst = dst.byRunout; sd.ci = ci;
+      }
+      return sd;
+    };
+    return {
+      offset, nRun, block, blockStart: offset,
+      hero: side(work.nHC, out && out.hero, work.heroEntryU, work.hC),
+      vill: side(work.nVC, out && out.villain, work.villEntryU, work.vC)
+    };
+  }
+
+  /** End-of-runout flush of the current counts (see _rowSink). @private */
+  _sinkFlush(sink, ri, rc) {
+    const slot = ri - sink.blockStart;
+    for (const side of [sink.hero, sink.vill]) {
+      const { n, cur, T, C } = side;
+      if (T) { T.win.set(cur.win, slot * n); T.tie.set(cur.tie, slot * n); T.lose.set(cur.lose, slot * n); }
+      if (C) {
+        for (let j = 0; j < 2; j++) {
+          const c = rc[j];
+          if (c < 0) continue;
+          const base = c * n, cw = C.win, ct = C.tie, cl = C.lose, uw = cur.win, ut = cur.tie, ul = cur.lose;
+          for (let i = 0; i < n; i++) { cw[base + i] += uw[i]; ct[base + i] += ut[i]; cl[base + i] += ul[i]; }
+        }
+      }
+    }
+    if (sink.hero.dst && slot + 1 === sink.block) { this._sinkDrain(sink, sink.block); sink.blockStart += sink.block; }
+  }
+
+  /** Transposes the first `count` runouts of each side's T block into its hand-major output rows. @private */
+  _sinkDrain(sink, count) {
+    for (const side of [sink.hero, sink.vill]) {
+      if (side.dst) this._transposeRows(side.dst, side.ci, side.T, side.n, sink.blockStart, count, sink.nRun);
+    }
+  }
+
+  /**
+   * R[e * nRun + base + r] = T[r * n + ci[e]] for r < count (all three fields),
+   * for every entry e whose compact index ci[e] >= 0.
+   * @private
+   */
+  _transposeRows(R, ci, T, n, base, count, nRun) {
+    const Tw = T.win, Tt = T.tie, Tl = T.lose, Rw = R.win, Rt = R.tie, Rl = R.lose;
+    for (let e = 0; e < ci.length; e++) {
+      const c = ci[e]; if (c < 0) continue;
+      for (let r = 0, q = e * nRun + base, p = c; r < count; r++, q++, p += n) { Rw[q] = Tw[p]; Rt[q] = Tt[p]; Rl[q] = Tl[p]; }
+    }
+  }
+
+  /** Row buffers { win, tie, lose } of `n` Float64s. @private */
+  _rowBufs(n) { return { win: new Float64Array(n), tie: new Float64Array(n), lose: new Float64Array(n) }; }
 
   /**
    * Compares ranges with canonical key caching optimization.
@@ -2351,7 +2671,7 @@ class BitVal {
    */
   async _runKernelBatches(work, nextBatch, onResult, useWorkers, progressCallback = null) {
     const kernel = work.perHand ? this._runExhaustiveHands : this._runExhaustive;
-    const runLocal = (b) => onResult(kernel.call(this, work, b, 0, b.length >> 2), b.length >> 2);
+    const runLocal = (b) => onResult(kernel.call(this, work, b, 0, b.length >> 2), b.length >> 2, b);
     let workers = null;
     if (useWorkers && typeof Worker !== 'undefined') {
       const n = (typeof navigator !== 'undefined' && navigator.hardwareConcurrency) || 4;
@@ -2377,7 +2697,7 @@ class BitVal {
       };
       worker.onmessage = (e) => {
         if (!e.data.success) { cleanup(); reject(new Error(e.data.error || 'Worker error')); return; }
-        onResult(e.data.result, current.length >> 2);
+        onResult(e.data.result, current.length >> 2, current);
         dispatch();
       };
       worker.onerror = (error) => {

@@ -45,7 +45,14 @@ self.onmessage = async function(e) {
       const { work, boards } = e.data;
       if (work.perHand) { // compareRangeHands: per-hand arrays, transferred back
         const r = _bitval._runExhaustiveHands(work, boards, 0, boards.length >> 2);
-        self.postMessage({ success: true, result: r }, [r.hw.buffer, r.ht.buffer, r.hl.buffer, r.vw.buffer, r.vt.buffer, r.vl.buffer]);
+        const transfer = [r.hw.buffer, r.ht.buffer, r.hl.buffer, r.vw.buffer, r.vt.buffer, r.vl.buffer];
+        if (r.rows) { // byCard / byRunout rows for this batch of runouts
+          for (const side of [r.rows.hero, r.rows.vill]) {
+            side.cur = null;
+            for (const g of [side.T, side.C]) if (g) transfer.push(g.win.buffer, g.tie.buffer, g.lose.buffer);
+          }
+        }
+        self.postMessage({ success: true, result: r }, transfer);
       } else {
         self.postMessage({ success: true, result: _bitval._runExhaustive(work, boards, 0, boards.length >> 2) });
       }

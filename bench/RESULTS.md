@@ -16,6 +16,26 @@
 Flop/turn also went from a ±0.5% approximation to **exact**; preflop went from
 Monte Carlo to an **exact table lookup**.
 
+## 1.13.0 — byCard / byRunout rows
+
+The per-hand kernels keep each runout's per-hand counts (already computed
+before being summed): a per-runout buffer (`cur`) is flushed into a 64-runout
+runout-major block, transposed into the hand-major output as each block fills
+(no full-size temporary), and added into card-major per-card totals.
+
+Node, median, compareRangeHandsSync: turn 300 x 300: plain 2.5 ms, +byCard
+4.5, +byRunout 3.5, both 4.1 (48 per-card calls: ~15 ms). Flop 470 x 470:
+plain ~48-53 ms, +byCard ~60, +byRunout ~72-74, both ~80-85 (1,176
+per-runout calls: 0.5-0.6 s). Full 1176 x 1176 flop: plain 66, both 181 ms.
+Chromium (4 cores) flop 470 x 470: main thread plain 57 / byCard 78 /
+byRunout 86 / both 104 ms; workers both ~90 ms. The remaining byRunout cost is
+mostly writing ~13 MB of fresh Float64 rows per side (page faults + one
+transpose); byCard's is the per-card additions.
+`bench/by-card.js` (13,965 checks): rows == optimize:false reference exactly,
+each row == a separate call on board + card/runout, sums == totals (flop
+byCard 2x), NaN placement, blocked hands 0/0/0, sync == async; Chromium:
+workers == sync, broken-worker fallback == sync.
+
 ## 1.12.0 — fewer evaluations, class-level ordering, preflop per-pattern keys (+ compareRangeHandsSync)
 
 - **Rank-class evaluation reuse** (`_evalRunout`, all four kernels): the 5
