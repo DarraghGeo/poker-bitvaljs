@@ -301,8 +301,8 @@ eq(r.hero, 0);  // AsKs's equity against the villain range
   gets zeros.
 - Exact on the flop/turn and with the preflop table; when Monte Carlo is
   needed it always uses [shared boards](#shared-board-monte-carlo-opt-in).
-- Cost: about 1.0–1.4× a plain `compareRange` (e.g. full range vs full range
-  on a flop: ~65 ms → ~90 ms; one hand vs a range: the same).
+- Cost: about 1.0–1.5× a plain `compareRange` (e.g. full range vs full range
+  on a flop: ~40 ms → ~60 ms; one hand vs a range: the same).
 
 ### Instance options
 
@@ -377,6 +377,13 @@ In this mode `iterations` is the maximum number of **boards** sampled (shared by
 all matchups), `mcTargetPct` applies to the aggregate equity, and the returned
 `win`/`tie`/`lose` are summed over valid pairs × boards. Equity percentages are
 directly comparable to the default mode; raw counts are not.
+
+## Changes in 1.11.1
+
+- Faster, same results: exact flop/turn `compareRange` 1.35–1.6×,
+  `compareRangeHands` 1.25–1.5×, preflop table lookups 1.25–1.4×,
+  shared-board Monte Carlo ~1.3×. Hands that can't make a flush on a runout
+  are scored once per rank pair instead of one by one.
 
 ## Changes in 1.11.0
 

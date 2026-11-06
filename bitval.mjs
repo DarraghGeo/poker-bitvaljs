@@ -909,33 +909,46 @@ class BitVal {
     // the permutations that minimize the hero part can win (2 for offsuit or
     // pairs, 6 for suited). Find those once per hero, then minimize the villain
     // part over just them — same key as _preflopCanonKey, ~4-12x less work.
+    // The minimizing permutation set depends only on the hero hand's suit
+    // pattern (a few dozen distinct sets), so each villain's minimized part is
+    // computed once per set (bestVBySet) and every matchup is one array load.
     const S4 = this._S4, pWin = this._pfWin, pTie = this._pfTie;
-    const perms = new Int32Array(24 * 4); let np = 0;
+    const nVill = villC.length >> 1;
+    const bestVBySet = new Map();
     let win = 0, tie = 0, lose = 0;
     for (let hi = 0; hi < heroC.length; hi += 2) {
       const h1 = heroC[hi], h2 = heroC[hi + 1];
-      let bestH = Infinity; np = 0;
+      let bestH = Infinity, set = 0;
       for (let pi = 0; pi < 24; pi++) {
         const p = S4[pi];
         const m1 = (h1 & ~3) | p[h1 & 3], m2 = (h2 & ~3) | p[h2 & 3];
         const hk = m1 < m2 ? m1 * 52 + m2 : m2 * 52 + m1;
         if (hk > bestH) continue;
-        if (hk < bestH) { bestH = hk; np = 0; }
-        perms[np * 4] = p[0]; perms[np * 4 + 1] = p[1]; perms[np * 4 + 2] = p[2]; perms[np * 4 + 3] = p[3]; np++;
+        if (hk < bestH) { bestH = hk; set = 0; }
+        set |= 1 << pi;
+      }
+      let bestV = bestVBySet.get(set);
+      if (bestV === undefined) {
+        bestV = new Int16Array(nVill);
+        for (let j = 0; j < nVill; j++) {
+          const v1 = villC[j * 2], v2 = villC[j * 2 + 1], b1 = v1 & ~3, s1 = v1 & 3, b2 = v2 & ~3, s2 = v2 & 3;
+          let best = 2704;
+          for (let pi = 0; pi < 24; pi++) {
+            if (!(set & (1 << pi))) continue;
+            const p = S4[pi], m1 = b1 | p[s1], m2 = b2 | p[s2];
+            const vk = m1 < m2 ? m1 * 52 + m2 : m2 * 52 + m1;
+            if (vk < best) best = vk;
+          }
+          bestV[j] = best;
+        }
+        bestVBySet.set(set, bestV);
       }
       const hBase = bestH * 2704;
       const hw = heroWeights ? heroWeights[hi >> 1] : 1;
       for (let vi = 0; vi < villC.length; vi += 2) {
         const v1 = villC[vi], v2 = villC[vi + 1];
         if (h1 === v1 || h1 === v2 || h2 === v1 || h2 === v2) continue; // conflicting hole cards
-        let bestV = 2704;
-        const b1 = v1 & ~3, s1 = v1 & 3, b2 = v2 & ~3, s2 = v2 & 3;
-        for (let k = 0; k < np; k++) {
-          const q = k * 4, m1 = b1 | perms[q + s1], m2 = b2 | perms[q + s2];
-          const vk = m1 < m2 ? m1 * 52 + m2 : m2 * 52 + m1;
-          if (vk < bestV) bestV = vk;
-        }
-        const idx = this._pfLookup(hBase + bestV);
+        const idx = this._pfLookup(hBase + bestV[vi >> 1]);
         if (idx < 0) throw new Error('preflop table is missing a matchup (corrupt or incomplete table)');
         const w = pWin[idx], t = pTie[idx];
         if (out) { // per-hand results for compareRangeHands
@@ -1790,6 +1803,9 @@ class BitVal {
     for (let u = 0; u < U; u++) { cardUOff[uA[u] + 1]++; cardUOff[uB[u] + 1]++; }
     for (let c = 0; c < 52; c++) cardUOff[c + 1] += cardUOff[c];
     const cardU = new Int32Array(U * 2), cfill = cardUOff.slice(0, 52);
+    // Rank-pair class (0..168) per unique hand, for evaluation reuse (_evalRunout).
+    const uCls = new Int32Array(U);
+    for (let u = 0; u < U; u++) { const ra = uA[u] >> 2, rb = uB[u] >> 2; uCls[u] = ra > rb ? ra * 13 + rb : rb * 13 + ra; }
     for (let u = 0; u < U; u++) { cardU[cfill[uA[u]]++] = u; cardU[cfill[uB[u]]++] = u; }
 
     const perHand = !!setup.perHand;
@@ -1833,10 +1849,81 @@ class BitVal {
     }
     return {
       uSuit, uA, uB, hMult, vMult, U, nH, nV, useCount, pHa, pVa, pW, P, cardTotal, cardUOff, cardU,
-      perHand, cardTotalH,
+      perHand, cardTotalH, uCls,
       heroEntryU: perHand ? heroSide.entryU : null, villEntryU: perHand ? villSide.entryU : null,
       bb0: bb[0], bb1: bb[1], bb2: bb[2], bb3: bb[3]
     };
+  }
+
+  /** Per-call scratch buffers for _evalRunout. @private */
+  _runoutScratch(U) {
+    return {
+      clsVal: new Int32Array(169), clsStamp: new Int32Array(169).fill(-1), head: new Int32Array(169),
+      next: new Int32Array(U), itemVal: new Int32Array(169 + U), itemRef: new Int32Array(169 + U),
+      t1: new Int32Array(169 + U), t2: new Int32Array(169 + U), cnt: new Int32Array(3 * 257)
+    };
+  }
+
+  /**
+   * Scores every live hand (dead[u] !== i) for runout i (suit masks at
+   * comboSuits[b..b+3]) into uVals, evaluating as few hands as possible:
+   * the 5 community cards have at most one suit S with M >= 3 cards, and a
+   * hand that can't reach 5 of S scores the same as every hand with the same
+   * two ranks (the evaluator's non-flush result depends only on rank
+   * multiplicities), so it reuses its rank class's value for this runout.
+   * Only flush-capable hands and one hand per class are evaluated (~100-300
+   * instead of ~1,200 for a full range).
+   *
+   * With `order`, also writes the live hands into order[0..L) sorted by value
+   * (equal values adjacent) and returns L: it radix-sorts one item per class
+   * plus one per flush-capable hand, then expands classes into their hands.
+   * @private
+   */
+  _evalRunout(work, comboSuits, b, i, dead, uVals, sc, order) {
+    const { uSuit, uA, uB, uCls, U, bb0, bb1, bb2, bb3 } = work;
+    const d0 = bb0 | comboSuits[b], d1 = bb1 | comboSuits[b + 1], d2 = bb2 | comboSuits[b + 2], d3 = bb3 | comboSuits[b + 3];
+    const P = this._POPC13;
+    let S = -1, M = 0;
+    { const c0 = P[d0], c1 = P[d1], c2 = P[d2], c3 = P[d3];
+      if (c0 >= 3) { S = 0; M = c0; } else if (c1 >= 3) { S = 1; M = c1; } else if (c2 >= 3) { S = 2; M = c2; } else if (c3 >= 3) { S = 3; M = c3; } }
+    const need = 5 - M; // a hand with >= need cards of suit S is flush-capable (S >= 0)
+    const { clsVal, clsStamp, head, next, itemVal, itemRef } = sc;
+    let n = 0;
+    for (let u = 0; u < U; u++) {
+      if (dead[u] === i) continue;
+      if (S >= 0 && ((uA[u] & 3) === S) + ((uB[u] & 3) === S) >= need) {
+        const q = u << 2;
+        const v = uVals[u] = this._eval7(uSuit[q] | d0, uSuit[q + 1] | d1, uSuit[q + 2] | d2, uSuit[q + 3] | d3);
+        if (order) { itemVal[n] = v; itemRef[n++] = 169 + u; }
+        continue;
+      }
+      const cl = uCls[u];
+      if (clsStamp[cl] !== i) {
+        const q = u << 2;
+        const v = clsVal[cl] = this._eval7(uSuit[q] | d0, uSuit[q + 1] | d1, uSuit[q + 2] | d2, uSuit[q + 3] | d3);
+        clsStamp[cl] = i;
+        if (order) { head[cl] = -1; itemVal[n] = v; itemRef[n++] = cl; }
+      }
+      uVals[u] = clsVal[cl];
+      if (order) { next[u] = head[cl]; head[cl] = u; }
+    }
+    if (!order) return 0;
+
+    // LSD radix sort of the n items by value (< 2^24: 3 x 8 bits), then expand.
+    const { t1, t2, cnt } = sc;
+    cnt.fill(0);
+    for (let k = 0; k < n; k++) { const v = itemVal[k]; cnt[(v & 255) + 1]++; cnt[257 + ((v >> 8) & 255) + 1]++; cnt[514 + ((v >> 16) & 255) + 1]++; }
+    for (let o = 0; o < 771; o += 257) for (let r = 0; r < 256; r++) cnt[o + r + 1] += cnt[o + r];
+    for (let k = 0; k < n; k++) t1[cnt[itemVal[k] & 255]++] = k;
+    for (let j = 0; j < n; j++) { const k = t1[j]; t2[cnt[257 + ((itemVal[k] >> 8) & 255)]++] = k; }
+    for (let j = 0; j < n; j++) { const k = t2[j]; t1[cnt[514 + ((itemVal[k] >> 16) & 255)]++] = k; }
+    let L = 0;
+    for (let j = 0; j < n; j++) {
+      const ref = itemRef[t1[j]];
+      if (ref >= 169) order[L++] = ref - 169;
+      else for (let u = head[ref]; u >= 0; u = next[u]) order[L++] = u;
+    }
+    return L;
   }
 
   /**
@@ -1870,12 +1957,10 @@ class BitVal {
     const cardTot = useCount ? new Float64Array(52) : null;
     let win = 0, tie = 0, lose = 0;
 
-    // Large-field scratch: live hand list, radix-sort buffers and counters,
-    // and per-card villain counts strictly below / equal to the current value.
-    const live = useCount ? new Int32Array(U) : null;
-    const tmp = useCount ? new Int32Array(U) : null;
+    // Scratch: runout evaluation / ordering buffers, and (large fields) the
+    // per-card villain counts strictly below / equal to the current value.
+    const sc = this._runoutScratch(U);
     const order = useCount ? new Int32Array(U) : null;
-    const cnt = useCount ? new Int32Array(3 * 257) : null;
     const lessC = useCount ? new Float64Array(52) : null;
     const eqC = useCount ? new Float64Array(52) : null;
 
@@ -1900,15 +1985,8 @@ class BitVal {
         }
       }
 
-      // Evaluate the live hands only.
-      const d0 = bb0 | comboSuits[b], d1 = bb1 | comboSuits[b + 1], d2 = bb2 | comboSuits[b + 2], d3 = bb3 | comboSuits[b + 3];
-      for (let u = 0; u < U; u++) {
-        if (dead[u] === i) continue;
-        const q = u << 2;
-        uVals[u] = this._eval7(uSuit[q] | d0, uSuit[q + 1] | d1, uSuit[q + 2] | d2, uSuit[q + 3] | d3);
-      }
-
       if (!useCount) {
+        this._evalRunout(work, comboSuits, b, i, dead, uVals, sc, null);
         for (let p = 0; p < P; p++) {
           const hu = pHa[p], vu = pVa[p];
           if (dead[hu] === i || dead[vu] === i) continue;
@@ -1919,19 +1997,8 @@ class BitVal {
         continue;
       }
 
-      // LSD radix sort of the live hands by value (values < 2^24: 3 x 8 bits).
-      let L = 0;
-      cnt.fill(0);
-      for (let u = 0; u < U; u++) {
-        if (dead[u] === i) continue;
-        live[L++] = u;
-        const v = uVals[u];
-        cnt[(v & 255) + 1]++; cnt[257 + ((v >> 8) & 255) + 1]++; cnt[514 + ((v >> 16) & 255) + 1]++;
-      }
-      for (let o = 0; o < 771; o += 257) for (let r = 0; r < 256; r++) cnt[o + r + 1] += cnt[o + r];
-      for (let k = 0; k < L; k++) { const u = live[k]; tmp[cnt[uVals[u] & 255]++] = u; }
-      for (let k = 0; k < L; k++) { const u = tmp[k]; live[cnt[257 + ((uVals[u] >> 8) & 255)]++] = u; }
-      for (let k = 0; k < L; k++) { const u = live[k]; order[cnt[514 + ((uVals[u] >> 16) & 255)]++] = u; }
+      // Live hands sorted by value (equal values adjacent).
+      const L = this._evalRunout(work, comboSuits, b, i, dead, uVals, sc, order);
       lessC.fill(0);
 
       let below = 0; // villain entries with value < current group value
@@ -1974,7 +2041,7 @@ class BitVal {
     const { uSuit, hMult, vMult, U, pHa, pVa, P, cardUOff, cardU, bb0, bb1, bb2, bb3 } = work;
     const hw = new Float64Array(U), ht = new Float64Array(U), hl = new Float64Array(U);
     const vw = new Float64Array(U), vt = new Float64Array(U), vl = new Float64Array(U);
-    const uVals = new Int32Array(U), dead = new Int32Array(U).fill(-1);
+    const uVals = new Int32Array(U), dead = new Int32Array(U).fill(-1), sc = this._runoutScratch(U);
     let win = 0, tie = 0, lose = 0;
     for (let i = runStart; i < runEnd; i++) {
       const b = i << 2;
@@ -1986,12 +2053,7 @@ class BitVal {
           for (let k = cardUOff[c], e = cardUOff[c + 1]; k < e; k++) dead[cardU[k]] = i;
         }
       }
-      const d0 = bb0 | comboSuits[b], d1 = bb1 | comboSuits[b + 1], d2 = bb2 | comboSuits[b + 2], d3 = bb3 | comboSuits[b + 3];
-      for (let u = 0; u < U; u++) {
-        if (dead[u] === i) continue;
-        const q = u << 2;
-        uVals[u] = this._eval7(uSuit[q] | d0, uSuit[q + 1] | d1, uSuit[q + 2] | d2, uSuit[q + 3] | d3);
-      }
+      this._evalRunout(work, comboSuits, b, i, dead, uVals, sc, null);
       for (let p = 0; p < P; p++) {
         const hu = pHa[p], vu = pVa[p];
         if (dead[hu] === i || dead[vu] === i) continue;
@@ -2030,7 +2092,7 @@ class BitVal {
     const vw = new Float64Array(U), vt = new Float64Array(U), vl = new Float64Array(U);
     const uVals = new Int32Array(U), dead = new Int32Array(U).fill(-1);
     const cardTotV = new Float64Array(52), cardTotH = new Float64Array(52);
-    const live = new Int32Array(U), tmp = new Int32Array(U), order = new Int32Array(U), cnt = new Int32Array(3 * 257);
+    const order = new Int32Array(U), sc = this._runoutScratch(U);
     const lessV = new Float64Array(52), eqV = new Float64Array(52), lessH = new Float64Array(52), eqH = new Float64Array(52);
     let win = 0, tie = 0, lose = 0;
 
@@ -2055,20 +2117,7 @@ class BitVal {
         }
       }
 
-      const d0 = bb0 | comboSuits[b], d1 = bb1 | comboSuits[b + 1], d2 = bb2 | comboSuits[b + 2], d3 = bb3 | comboSuits[b + 3];
-      let L = 0;
-      cnt.fill(0);
-      for (let u = 0; u < U; u++) {
-        if (dead[u] === i) continue;
-        const q = u << 2;
-        const v = uVals[u] = this._eval7(uSuit[q] | d0, uSuit[q + 1] | d1, uSuit[q + 2] | d2, uSuit[q + 3] | d3);
-        live[L++] = u;
-        cnt[(v & 255) + 1]++; cnt[257 + ((v >> 8) & 255) + 1]++; cnt[514 + ((v >> 16) & 255) + 1]++;
-      }
-      for (let o = 0; o < 771; o += 257) for (let r = 0; r < 256; r++) cnt[o + r + 1] += cnt[o + r];
-      for (let k = 0; k < L; k++) { const u = live[k]; tmp[cnt[uVals[u] & 255]++] = u; }
-      for (let k = 0; k < L; k++) { const u = tmp[k]; live[cnt[257 + ((uVals[u] >> 8) & 255)]++] = u; }
-      for (let k = 0; k < L; k++) { const u = live[k]; order[cnt[514 + ((uVals[u] >> 16) & 255)]++] = u; }
+      const L = this._evalRunout(work, comboSuits, b, i, dead, uVals, sc, order);
       lessV.fill(0); lessH.fill(0);
 
       let belowV = 0, belowH = 0; // villain / hero weight strictly below the current value

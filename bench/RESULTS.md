@@ -16,6 +16,33 @@
 Flop/turn also went from a ±0.5% approximation to **exact**; preflop went from
 Monte Carlo to an **exact table lookup**.
 
+## 1.11.1 — fewer evaluations, class-level ordering, preflop per-pattern keys
+
+- **Rank-class evaluation reuse** (`_evalRunout`, all four kernels): the 5
+  community cards have at most one suit with >= 3 cards; a hand that can't
+  reach 5 of it scores the same as every hand with its two ranks (the
+  non-flush branch of the evaluator depends only on rank multiplicities), so
+  one evaluation per rank class is reused. Full range on a flop: 99
+  (rainbow) to 283 (two-tone) evaluations per runout instead of 1,176.
+- **Class-level ordering**: radix-sort one item per class plus one per
+  flush-capable hand, then expand classes into hands (the sweep only needs
+  equal values adjacent).
+- **Preflop**: the minimizing suit-permutation set depends only on the hero
+  hand's suit pattern, so each villain's minimized key is computed once per
+  pattern and each matchup is one array load + the table lookup.
+
+Node, 1.11.0 → 1.11.1 (best-of): flop rainbow full vs full compareRange
+63.5 → 40.5 ms, compareRangeHands 83.1 → 61.4 ms; two-tone 63.9 → 42.8 /
+81.5 → 64.0; monotone 65.0 → 48.3 / 82.0 → 66.6; squeeze vs wide 12.4 → 8.7 /
+16.6 → 12.2; 1 vs squeeze 2.1 → 1.3 / 2.1 → 1.4; turn full vs full 3.3 → 2.3 /
+3.9 → 2.9; preflop table full vs full 38.8 → 27.9 / 52.7 → 41.8; shared-board
+MC 50k boards 593 → 459 / 797 → 609. Results byte-identical to 1.11.0 for
+unweighted and dyadic weights (non-dyadic: equal to ~1e-15 relative, as the
+order of additions within tie groups changed); 320 randomized identity
+checks. Chromium, 4 workers: worker split still pays from ~250k
+(unique hands x runouts), threshold kept at 300k; full vs full flop 47 → 25 ms
+(compareRange) and 68 → 42 ms (compareRangeHands) with workers.
+
 ## 1.11.0 — compareRangeHands (per-hand results)
 
 Per-hand counting has its own kernels (`_runExhaustiveHands`, and a direct
