@@ -110,6 +110,36 @@ function reference(hero, villain, board) {
     }
   } else console.log('3) skipped: bench/preflop-table.bin not present');
 
+  console.log('3b) blocked spots with non-dyadic weights (floating-point residue must not leak)');
+  {
+    const board = ['2c', '7d', '9h'];
+    const withAs = DECK.filter(c => c !== 'As' && !board.includes(c)).map(c => 'As' + c); // every hand holds As
+    const ND = [0.1, 0.3, 0.7, 0.2, 0.9, 0.6, 0.15];
+    const nd = a => a.map((h, i) => `${h}:${ND[i % ND.length]}`);
+    // Every hero hand shares As with every villain hand: nothing is met, so exactly 0/0/0.
+    const blocked = await bv.compareRange(nd(withAs.slice(0, 20)), nd(withAs.slice(20, 45)), board, [], 5, 1, true, null, 100, false);
+    ok(blocked.win === 0 && blocked.tie === 0 && blocked.lose === 0, `all-blocked exact should be 0/0/0, got ${k(blocked)}`);
+    const sb = new BitVal(); sb.mcSharedBoards = true;
+    const blockedMc = await sb.compareRange(nd(withAs.slice(0, 20)), nd(withAs.slice(20, 45)), [], ['2c'], 5, 20000, true, null, 100, false);
+    ok(blockedMc.win === 0 && blockedMc.tie === 0 && blockedMc.lose === 0, `all-blocked shared MC should be 0/0/0, got ${k(blockedMc)}`);
+    // Random non-dyadic spots, some heroes fully blocked: never negative, and
+    // optimized == unoptimized to within rounding.
+    for (let i = 0; i < 30; i++) {
+      const used = new Set(), bd = [];
+      while (bd.length < 3 + (i % 2)) { const c = DECK[rint(52)]; if (!used.has(c)) { used.add(c); bd.push(c); } }
+      const hero = randomHands(16 + rint(10), used).map(h => `${h}:${ND[rint(ND.length)]}`);
+      const pivot = hero[0].slice(0, 2), pivot2 = hero[0].slice(2, 4);
+      const villain = DECK.filter(c => !used.has(c) && c !== pivot && c !== pivot2).slice(0, 18 + rint(10))
+        .map((c, j) => `${j % 2 ? pivot : pivot2}${c}:${ND[rint(ND.length)]}`); // all clash with hero[0]
+      const opt = await bv.compareRange(hero, villain, bd, [], 5, 1, true, null, 100, false);
+      const unopt = await bv.compareRange(hero, villain, bd, [], 5, 1, false, null, 100, false);
+      ok(opt.win >= 0 && opt.tie >= 0 && opt.lose >= 0, `negative count ${k(opt)}`);
+      const scale = opt.win + opt.tie + opt.lose;
+      const close = ['win', 'tie', 'lose'].every(f => Math.abs(opt[f] - unopt[f]) <= 1e-9 * Math.max(1, scale));
+      ok(close, `non-dyadic opt vs unopt ${k(opt)} vs ${k(unopt)}`);
+    }
+  }
+
   console.log('4) input validation');
   for (const bad of [['AsKs:-1'], ['AsKs:abc'], [{ hand: 'AsK' }], [{ hand: 'AsKs', weight: Infinity }], [42]]) {
     let threw = false;

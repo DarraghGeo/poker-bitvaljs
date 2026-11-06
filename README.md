@@ -277,6 +277,33 @@ Compares two ranges of hands.
 **Returns:**
 - `Promise<{ win, tie, lose }>`: Results object. With combo weights these are weighted sums and can be fractional.
 
+### `compareRangeHands(...)` — per-hand results
+
+Same arguments as `compareRange`, but it also returns every hand's own result
+from the same single pass: each hero hand against the villain range, and each
+villain hand against the hero range.
+
+```javascript
+const r = await bitval.compareRangeHands(['AsKs', 'QhQd:0.5'], ['JcJd', 'AhKh'], ['2c', '7d', '9h']);
+// r.win / r.tie / r.lose        totals, identical to compareRange
+// r.hero.hands                  ['AsKs', 'QhQd']
+// r.hero.win[i], .tie[i], .lose[i]   hero hand i against the villain range
+// r.villain.win[j], ...          villain hand j against the hero range (its own wins)
+const eq = (side, i) => (side.win[i] + side.tie[i] / 2) / (side.win[i] + side.tie[i] + side.lose[i]);
+eq(r.hero, 0);  // AsKs's equity against the villain range
+```
+
+- A hand's counts are weighted by the **other** side's weights only, so the
+  formula above is that hand's equity. Totals are `sum(weight × row)`.
+- A hand blocked by every opposing combo gets exactly `0` / `0` / `0`.
+- `hands` / `weights` are the normalized range (weight-0 entries removed);
+  rows are `Float64Array`s in that order. A hand that clashes with the board
+  gets zeros.
+- Exact on the flop/turn and with the preflop table; when Monte Carlo is
+  needed it always uses [shared boards](#shared-board-monte-carlo-opt-in).
+- Cost: about 1.0–1.4× a plain `compareRange` (e.g. full range vs full range
+  on a flop: ~65 ms → ~90 ms; one hand vs a range: the same).
+
 ### Instance options
 
 - `bitval.mcSharedBoards` (Boolean, default `false`): use
@@ -325,6 +352,9 @@ const equity = (r.win + r.tie / 2) / (r.win + r.tie + r.lose);
   is computed from them exactly as before.
 - Works on every path: exact flop/turn, the preflop table, both Monte Carlo
   modes, Web Workers and `optimize: false`. Unweighted calls are unchanged.
+- If no matchup is possible (e.g. every villain combo shares a card with
+  every hero combo), `win`, `tie` and `lose` are all exactly `0`; check for
+  that before dividing to get equity.
 
 ### Shared-board Monte Carlo (opt-in)
 
@@ -347,6 +377,14 @@ In this mode `iterations` is the maximum number of **boards** sampled (shared by
 all matchups), `mcTargetPct` applies to the aggregate equity, and the returned
 `win`/`tie`/`lose` are summed over valid pairs × boards. Equity percentages are
 directly comparable to the default mode; raw counts are not.
+
+## Changes in 1.11.0
+
+- [`compareRangeHands`](#comparerangehands--per-hand-results): every hero
+  hand's and every villain hand's win/tie/lose from one call.
+- Fix: with fractional weights, a spot where hero hands are blocked by every
+  villain combo could return tiny non-zero (even negative) counts instead of
+  exactly `0`, so equity came out as nonsense. Unweighted results unchanged.
 
 ## Changes in 1.10.0
 

@@ -16,6 +16,24 @@
 Flop/turn also went from a ±0.5% approximation to **exact**; preflop went from
 Monte Carlo to an **exact table lookup**.
 
+## 1.11.0 — compareRangeHands (per-hand results)
+
+Per-hand counting has its own kernels (`_runExhaustiveHands`, and a direct
+pair version for small fields) so `compareRange` is untouched. The counting
+sweep keeps running counts for both sides, so each villain hand's result comes
+from the same pass. Node, best-of, compareRange → compareRangeHands: flop
+1 vs 82 2.2 → 2.2 ms; squeeze vs wide 13.1 → 16.6 ms; full vs full 64.5 →
+89.7 ms; turn full vs full 3.1 → 3.8 ms; preflop table full vs full 40.8 →
+51.8 ms; shared-board MC 50k boards 604 → 725 ms. Chromium: per-hand results
+identical with and without workers; full vs full flop ~47 ms on 4 warm workers.
+`bench/hands.js` (293 checks): optimized rows == optimize:false exactly, each
+row == the hand alone, totals == compareRange, blocked hands 0/0/0, MC rows
+within 0.2pp of exact.
+
+Also includes the weighted-residue fix: the counting sweep snaps per-hero
+values below half the smallest villain weight to 0 (previously a fully
+blocked weighted spot could return ±1e-12 counts).
+
 ## 1.9.0 — public fast evaluator
 
 `evaluateSuits` is the evaluator's body and `_eval7` is assigned the same

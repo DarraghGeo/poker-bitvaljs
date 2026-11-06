@@ -43,7 +43,12 @@ self.onmessage = async function(e) {
     // (BitVal._runKernelBatches): exact flop/turn and shared-board Monte Carlo.
     if (e.data.type === 'kernel') {
       const { work, boards } = e.data;
-      self.postMessage({ success: true, result: _bitval._runExhaustive(work, boards, 0, boards.length >> 2) });
+      if (work.perHand) { // compareRangeHands: per-hand arrays, transferred back
+        const r = _bitval._runExhaustiveHands(work, boards, 0, boards.length >> 2);
+        self.postMessage({ success: true, result: r }, [r.hw.buffer, r.ht.buffer, r.hl.buffer, r.vw.buffer, r.vt.buffer, r.vl.buffer]);
+      } else {
+        self.postMessage({ success: true, result: _bitval._runExhaustive(work, boards, 0, boards.length >> 2) });
+      }
       return;
     }
 

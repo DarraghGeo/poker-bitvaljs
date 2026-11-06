@@ -689,6 +689,121 @@ class BitVal {
   }
 
   /**
+   * Like compareRange, but also returns every hand's own result, from the same
+   * single pass: each hero hand's win/tie/lose against the villain range, and
+   * each villain hand's win/tie/lose against the hero range. Same arguments and
+   * the same calculation paths as compareRange (exact flop/turn, preflop
+   * table), except that Monte Carlo always uses shared boards (see
+   * mcSharedBoards), since per-matchup sampling can't give per-hand results.
+   *
+   * A hand's counts are weighted by the OTHER side's weights only, so its
+   * equity is (win + tie / 2) / (win + tie + lose); all three are 0 when no
+   * matchup is possible (e.g. it's blocked by every opposing combo). The
+   * totals equal sum(weight[i] * hero.win[i]) etc. and match compareRange.
+   *
+   * @returns {Promise<Object>} { win, tie, lose,
+   *   hero:    { hands, weights, win, tie, lose },   // Float64Arrays, by hand index
+   *   villain: { hands, weights, win, tie, lose } }  // villain.win = villain's wins
+   *   `hands` are the normalized hand strings (weight-0 entries removed).
+   */
+  async compareRangeHands(heroHands, villainHands, boardCards = [], deadCards = [], numberOfBoardCards = 5, iterations = 10000, optimize = true, progressCallback = null, progressInterval = 100, useWorkers = true, mcTargetPct = 0.3) {
+    const hero = this._normalizeRange(heroHands), villain = this._normalizeRange(villainHands);
+    const H = hero.hands, V = villain.hands, hw = hero.weights, vw = villain.weights;
+    const side = (hands, weights) => ({
+      hands, weights: weights || new Float64Array(hands.length).fill(1),
+      win: new Float64Array(hands.length), tie: new Float64Array(hands.length), lose: new Float64Array(hands.length)
+    });
+    const out = { win: 0, tie: 0, lose: 0, hero: side(H, hw), villain: side(V, vw) };
+
+    if (this._pfSlot && boardCards.length === 0 && deadCards.length === 0 && numberOfBoardCards === 5) {
+      const r = this._compareRangePreflopExact(H, V, hw, vw, out);
+      out.win = r.win; out.tie = r.tie; out.lose = r.lose;
+      if (progressCallback) progressCallback(1, 1, 'Complete');
+      return out;
+    }
+
+    const setup = this._compareRangeSetup(H, V, boardCards, deadCards, numberOfBoardCards, iterations, optimize, hw, vw);
+    setup.mcTarget = mcTargetPct;
+    setup.perHand = true;
+    if (!optimize) {
+      await this._compareRangeHandsUnoptimized(setup, out, progressCallback);
+      return out;
+    }
+
+    let work, acc;
+    if (setup.isExhaustive) {
+      work = this._buildExhaustiveWork(setup);
+      const comboSuits = setup._comboSuits, nRun = comboSuits.length >> 2;
+      if (useWorkers && typeof Worker !== 'undefined' && work.U * nRun >= this._EXACT_WORKER_THRESHOLD) {
+        const nw = (typeof navigator !== 'undefined' && navigator.hardwareConcurrency) || 4;
+        const chunk = Math.max(1, Math.ceil(nRun / nw));
+        let next = 0, done = 0;
+        acc = this._emptyHandTotals(work.U);
+        await this._runKernelBatches(work,
+          () => { if (next >= nRun) return null; const a = next; next = Math.min(nRun, next + chunk); return comboSuits.slice(a * 4, next * 4); },
+          (r, n) => { this._addHandTotals(acc, r); done += n; if (progressCallback) progressCallback(done, nRun, `Evaluating runouts ${done}/${nRun}`); },
+          true, progressCallback);
+      } else {
+        acc = this._runExhaustiveHands(work, comboSuits, 0, nRun);
+      }
+      if (progressCallback) progressCallback(nRun, nRun, 'Complete');
+    } else {
+      const r = await this._compareRangeSharedBoards(setup, progressCallback, useWorkers);
+      work = r.work; acc = r.hands;
+    }
+    out.win = acc.win; out.tie = acc.tie; out.lose = acc.lose;
+    const fill = (dst, entryU, w, t, l) => {
+      for (let i = 0; i < entryU.length; i++) {
+        const u = entryU[i];
+        if (u >= 0) { dst.win[i] = w[u]; dst.tie[i] = t[u]; dst.lose[i] = l[u]; }
+      }
+    };
+    fill(out.hero, work.heroEntryU, acc.hw, acc.ht, acc.hl);
+    fill(out.villain, work.villEntryU, acc.vw, acc.vt, acc.vl);
+    return out;
+  }
+
+  /** Zeroed per-hand accumulator for U unique hands. @private */
+  _emptyHandTotals(U) {
+    return { win: 0, tie: 0, lose: 0,
+      hw: new Float64Array(U), ht: new Float64Array(U), hl: new Float64Array(U),
+      vw: new Float64Array(U), vt: new Float64Array(U), vl: new Float64Array(U) };
+  }
+
+  /** Adds one batch's per-hand kernel result into an accumulator. @private */
+  _addHandTotals(acc, r) {
+    acc.win += r.win; acc.tie += r.tie; acc.lose += r.lose;
+    for (const f of ['hw', 'ht', 'hl', 'vw', 'vt', 'vl']) { const a = acc[f], b = r[f]; for (let u = 0; u < a.length; u++) a[u] += b[u]; }
+  }
+
+  /**
+   * compareRangeHands with optimize=false: every valid pair evaluated on its
+   * own (the reference the optimized per-hand paths are tested against).
+   * @private
+   */
+  async _compareRangeHandsUnoptimized(setup, out, progressCallback = null) {
+    const { heroHands: H, villainHands: V, heroWeights, villainWeights } = setup;
+    const board = this._cardsBitset(setup.boardCards);
+    const parse = (hands) => hands.map(h => { const p = this._parseHand(h); return { lo: p.lo, hi: p.hi, ok: !((p.lo & board.lo) | (p.hi & board.hi)), mask: this.getBitMasked(this._handStringToCards(h)) }; });
+    const hp = parse(H), vp = parse(V);
+    let done = 0;
+    for (let i = 0; i < H.length; i++) {
+      if (!hp[i].ok) continue;
+      const hwi = heroWeights ? heroWeights[i] : 1;
+      for (let j = 0; j < V.length; j++) {
+        if (!vp[j].ok || (hp[i].lo & vp[j].lo) | (hp[i].hi & vp[j].hi)) continue;
+        const vwj = villainWeights ? villainWeights[j] : 1;
+        const r = this._evaluateMatchupSync(hp[i].mask, vp[j].mask, setup);
+        out.hero.win[i] += r.matchupWin * vwj; out.hero.tie[i] += r.matchupTie * vwj; out.hero.lose[i] += r.matchupLose * vwj;
+        out.villain.win[j] += r.matchupLose * hwi; out.villain.tie[j] += r.matchupTie * hwi; out.villain.lose[j] += r.matchupWin * hwi;
+        const m = hwi * vwj;
+        out.win += r.matchupWin * m; out.tie += r.matchupTie * m; out.lose += r.matchupLose * m;
+      }
+      if (progressCallback) progressCallback(++done, H.length, `Hero hand ${done}/${H.length}`);
+    }
+  }
+
+  /**
    * Normalizes a range for compareRange. Each entry is a hand string 'AsKs'
    * (weight 1), a weighted string 'AsKs:0.5' (PioSolver / GTO+ style) or an
    * object { hand: 'AsKs', weight: 0.5 }. Weights must be finite and >= 0;
@@ -784,7 +899,7 @@ class BitVal {
    * villain) matchup's exact win/tie/lose over all C(48,5) boards.
    * @private
    */
-  _compareRangePreflopExact(heroHands, villainHands, heroWeights = null, villainWeights = null) {
+  _compareRangePreflopExact(heroHands, villainHands, heroWeights = null, villainWeights = null, out = null) {
     const total = this._pfTotal;
     const heroC = [], villC = [];
     for (const h of heroHands) heroC.push(this._cardIndex(h.slice(0, 2)), this._cardIndex(h.slice(2, 4)));
@@ -823,6 +938,11 @@ class BitVal {
         const idx = this._pfLookup(hBase + bestV);
         if (idx < 0) throw new Error('preflop table is missing a matchup (corrupt or incomplete table)');
         const w = pWin[idx], t = pTie[idx];
+        if (out) { // per-hand results for compareRangeHands
+          const vwj = villainWeights ? villainWeights[vi >> 1] : 1, lz = total - w - t;
+          out.hero.win[hi >> 1] += w * vwj; out.hero.tie[hi >> 1] += t * vwj; out.hero.lose[hi >> 1] += lz * vwj;
+          out.villain.win[vi >> 1] += lz * hw; out.villain.tie[vi >> 1] += t * hw; out.villain.lose[vi >> 1] += w * hw;
+        }
         if (heroWeights || villainWeights) {
           const m = hw * (villainWeights ? villainWeights[vi >> 1] : 1);
           win += w * m; tie += t * m; lose += (total - w - t) * m;
@@ -1634,7 +1754,7 @@ class BitVal {
     const uIndex = new Int32Array(52 * 52).fill(-1);
     const uSuitArr = [], uAArr = [], uBArr = [], uLoArr = [], uHiArr = [];
     const addSide = (hands, weights) => {
-      const u = [], wt = [];
+      const u = [], wt = [], entryU = new Int32Array(hands.length).fill(-1);
       for (let i = 0; i < hands.length; i++) {
         const hand = hands[i], p = this._parseHand(hand);
         if ((p.lo & board.lo) | (p.hi & board.hi)) continue; // conflicts with board
@@ -1646,9 +1766,9 @@ class BitVal {
           uSuitArr.push(s[0], s[1], s[2], s[3]);
           uAArr.push(p.a); uBArr.push(p.b); uLoArr.push(p.lo); uHiArr.push(p.hi);
         }
-        u.push(ui); wt.push(weights ? weights[i] : 1);
+        u.push(ui); wt.push(weights ? weights[i] : 1); entryU[i] = ui;
       }
-      return { u, wt };
+      return { u, wt, entryU };
     };
     const heroSide = addSide(setup.heroHands, setup.heroWeights);
     const villSide = addSide(setup.villainHands, setup.villainWeights);
@@ -1672,13 +1792,32 @@ class BitVal {
     const cardU = new Int32Array(U * 2), cfill = cardUOff.slice(0, 52);
     for (let u = 0; u < U; u++) { cardU[cfill[uA[u]]++] = u; cardU[cfill[uB[u]]++] = u; }
 
+    const perHand = !!setup.perHand;
     const useCount = nH >= 16 && nV >= 16;
-    let pHa = null, pVa = null, pW = null, P = 0, cardTotal = null;
+    let pHa = null, pVa = null, pW = null, P = 0, cardTotal = null, cardTotalH = null;
+    if (perHand && !useCount) {
+      // Per-hand, small field: direct comparison over UNIQUE hand pairs (the
+      // per-hand kernel applies hMult / vMult itself).
+      const ph = [], pv = [];
+      for (let h = 0; h < U; h++) {
+        if (!hMult[h]) continue;
+        for (let v = 0; v < U; v++) {
+          if (!vMult[v] || (uLoArr[h] & uLoArr[v]) | (uHiArr[h] & uHiArr[v])) continue;
+          ph.push(h); pv.push(v);
+        }
+      }
+      pHa = Int32Array.from(ph); pVa = Int32Array.from(pv); P = pHa.length;
+    }
+    if (perHand && useCount) {
+      // cardTotalH[c] = total hero weight holding card c (for villain-side counts).
+      cardTotalH = new Float64Array(52);
+      for (let u = 0; u < U; u++) { cardTotalH[uA[u]] += hMult[u]; cardTotalH[uB[u]] += hMult[u]; }
+    }
     if (useCount) {
       // cardTotal[c] = total villain weight holding card c.
       cardTotal = new Float64Array(52);
       for (let u = 0; u < U; u++) { cardTotal[uA[u]] += vMult[u]; cardTotal[uB[u]] += vMult[u]; }
-    } else {
+    } else if (!perHand) {
       const ph = [], pv = [], pw = [];
       for (let i = 0; i < heroU.length; i++) {
         const h = heroU[i], hl = uLoArr[h], hh = uHiArr[h];
@@ -1694,6 +1833,8 @@ class BitVal {
     }
     return {
       uSuit, uA, uB, hMult, vMult, U, nH, nV, useCount, pHa, pVa, pW, P, cardTotal, cardUOff, cardU,
+      perHand, cardTotalH,
+      heroEntryU: perHand ? heroSide.entryU : null, villEntryU: perHand ? villSide.entryU : null,
       bb0: bb[0], bb1: bb[1], bb2: bb[2], bb3: bb[3]
     };
   }
@@ -1713,6 +1854,15 @@ class BitVal {
     const { uSuit, uA, uB, hMult, vMult, U, useCount, pHa, pVa, pW, P, cardTotal, cardUOff, cardU, bb0, bb1, bb2, bb3 } = work;
     // Total villain weight (= villain entry count when unweighted).
     let nV = 0; for (let u = 0; u < U; u++) nV += vMult[u];
+    // Counting by subtraction leaves floating-point residue with fractional
+    // weights: a hero blocked by every villain can come out as +/-1e-15
+    // instead of 0. A genuine per-hero count is a sum of villain weights, so
+    // it is 0 or at least the smallest villain weight; anything below half of
+    // that (negatives included) is residue and is snapped to exactly 0.
+    // Unweighted counts are whole numbers, so they are never changed.
+    let snap = Infinity;
+    for (let u = 0; u < U; u++) { const m = vMult[u]; if (m > 0 && m < snap) snap = m; }
+    snap = snap === Infinity ? 0 : snap * 0.5;
     const uVals = new Int32Array(U);
     // dead[u] === i  <=>  hand u holds a card dealt in runout i, so it takes no
     // part in that runout (neither as hero nor as villain).
@@ -1798,9 +1948,12 @@ class BitVal {
           const u = order[k], m = hMult[u];
           if (!m) continue;
           const a = uA[u], c = uB[u];
-          const w = below - lessC[a] - lessC[c];
-          const t = eqTotal - eqC[a] - eqC[c] + vMult[u];
-          const l = above - (cardTot[a] - lessC[a] - eqC[a]) - (cardTot[c] - lessC[c] - eqC[c]);
+          let w = below - lessC[a] - lessC[c];
+          let t = eqTotal - eqC[a] - eqC[c] + vMult[u];
+          let l = above - (cardTot[a] - lessC[a] - eqC[a]) - (cardTot[c] - lessC[c] - eqC[c]);
+          if (w < snap) w = 0;
+          if (t < snap) t = 0;
+          if (l < snap) l = 0;
           win += w * m; tie += t * m; lose += l * m;
         }
         // Fold this group into the running "below" counts.
@@ -1810,6 +1963,158 @@ class BitVal {
       }
     }
     return { win, tie, lose };
+  }
+
+  /**
+   * Per-hand kernel for small fields: compares the unique hand pairs directly
+   * (no subtraction, so no residue), mirroring _runExhaustive's direct path.
+   * @private
+   */
+  _runExhaustiveHandsDirect(work, comboSuits, runStart, runEnd) {
+    const { uSuit, hMult, vMult, U, pHa, pVa, P, cardUOff, cardU, bb0, bb1, bb2, bb3 } = work;
+    const hw = new Float64Array(U), ht = new Float64Array(U), hl = new Float64Array(U);
+    const vw = new Float64Array(U), vt = new Float64Array(U), vl = new Float64Array(U);
+    const uVals = new Int32Array(U), dead = new Int32Array(U).fill(-1);
+    let win = 0, tie = 0, lose = 0;
+    for (let i = runStart; i < runEnd; i++) {
+      const b = i << 2;
+      for (let s = 0; s < 4; s++) {
+        let m = comboSuits[b + s];
+        while (m) {
+          const low = m & -m; m ^= low;
+          const c = (31 - Math.clz32(low)) * 4 + s;
+          for (let k = cardUOff[c], e = cardUOff[c + 1]; k < e; k++) dead[cardU[k]] = i;
+        }
+      }
+      const d0 = bb0 | comboSuits[b], d1 = bb1 | comboSuits[b + 1], d2 = bb2 | comboSuits[b + 2], d3 = bb3 | comboSuits[b + 3];
+      for (let u = 0; u < U; u++) {
+        if (dead[u] === i) continue;
+        const q = u << 2;
+        uVals[u] = this._eval7(uSuit[q] | d0, uSuit[q + 1] | d1, uSuit[q + 2] | d2, uSuit[q + 3] | d3);
+      }
+      for (let p = 0; p < P; p++) {
+        const hu = pHa[p], vu = pVa[p];
+        if (dead[hu] === i || dead[vu] === i) continue;
+        const hv = uVals[hu], vv = uVals[vu], hm = hMult[hu], vm = vMult[vu];
+        if (hv > vv) { hw[hu] += vm; vl[vu] += hm; win += hm * vm; }
+        else if (vv > hv) { hl[hu] += vm; vw[vu] += hm; lose += hm * vm; }
+        else { ht[hu] += vm; vt[vu] += hm; tie += hm * vm; }
+      }
+    }
+    return { win, tie, lose, hw, ht, hl, vw, vt, vl };
+  }
+
+  /**
+   * Per-hand variant of _runExhaustive for compareRangeHands (counting sweep
+   * only). One pass gives, for every unique hand u, its results as a hero
+   * against the villain range (hw/ht/hl, weighted by villain weights) and as a
+   * villain against the hero range (vw/vt/vl, weighted by hero weights), using
+   * running counts for both sides, plus the weighted totals. Kept separate so
+   * compareRange's kernel is untouched.
+   * @private
+   */
+  _runExhaustiveHands(work, comboSuits, runStart, runEnd) {
+    if (!work.useCount) return this._runExhaustiveHandsDirect(work, comboSuits, runStart, runEnd);
+    const { uSuit, uA, uB, hMult, vMult, U, cardTotal, cardTotalH, cardUOff, cardU, bb0, bb1, bb2, bb3 } = work;
+    let nV = 0, nH = 0, snapV = Infinity, snapH = Infinity;
+    for (let u = 0; u < U; u++) {
+      const vm = vMult[u], hm = hMult[u];
+      nV += vm; nH += hm;
+      if (vm > 0 && vm < snapV) snapV = vm;
+      if (hm > 0 && hm < snapH) snapH = hm;
+    }
+    // Residue snapping as in _runExhaustive, per side.
+    snapV = snapV === Infinity ? 0 : snapV * 0.5;
+    snapH = snapH === Infinity ? 0 : snapH * 0.5;
+    const hw = new Float64Array(U), ht = new Float64Array(U), hl = new Float64Array(U);
+    const vw = new Float64Array(U), vt = new Float64Array(U), vl = new Float64Array(U);
+    const uVals = new Int32Array(U), dead = new Int32Array(U).fill(-1);
+    const cardTotV = new Float64Array(52), cardTotH = new Float64Array(52);
+    const live = new Int32Array(U), tmp = new Int32Array(U), order = new Int32Array(U), cnt = new Int32Array(3 * 257);
+    const lessV = new Float64Array(52), eqV = new Float64Array(52), lessH = new Float64Array(52), eqH = new Float64Array(52);
+    let win = 0, tie = 0, lose = 0;
+
+    for (let i = runStart; i < runEnd; i++) {
+      const b = i << 2;
+      // Hands holding a runout card sit this runout out, on both sides.
+      let nVi = nV, nHi = nH;
+      cardTotV.set(cardTotal); cardTotH.set(cardTotalH);
+      for (let s = 0; s < 4; s++) {
+        let m = comboSuits[b + s];
+        while (m) {
+          const low = m & -m; m ^= low;
+          const c = (31 - Math.clz32(low)) * 4 + s;
+          for (let k = cardUOff[c], e = cardUOff[c + 1]; k < e; k++) {
+            const u = cardU[k];
+            if (dead[u] === i) continue;
+            dead[u] = i;
+            const vm = vMult[u], hm = hMult[u];
+            if (vm) { nVi -= vm; cardTotV[uA[u]] -= vm; cardTotV[uB[u]] -= vm; }
+            if (hm) { nHi -= hm; cardTotH[uA[u]] -= hm; cardTotH[uB[u]] -= hm; }
+          }
+        }
+      }
+
+      const d0 = bb0 | comboSuits[b], d1 = bb1 | comboSuits[b + 1], d2 = bb2 | comboSuits[b + 2], d3 = bb3 | comboSuits[b + 3];
+      let L = 0;
+      cnt.fill(0);
+      for (let u = 0; u < U; u++) {
+        if (dead[u] === i) continue;
+        const q = u << 2;
+        const v = uVals[u] = this._eval7(uSuit[q] | d0, uSuit[q + 1] | d1, uSuit[q + 2] | d2, uSuit[q + 3] | d3);
+        live[L++] = u;
+        cnt[(v & 255) + 1]++; cnt[257 + ((v >> 8) & 255) + 1]++; cnt[514 + ((v >> 16) & 255) + 1]++;
+      }
+      for (let o = 0; o < 771; o += 257) for (let r = 0; r < 256; r++) cnt[o + r + 1] += cnt[o + r];
+      for (let k = 0; k < L; k++) { const u = live[k]; tmp[cnt[uVals[u] & 255]++] = u; }
+      for (let k = 0; k < L; k++) { const u = tmp[k]; live[cnt[257 + ((uVals[u] >> 8) & 255)]++] = u; }
+      for (let k = 0; k < L; k++) { const u = live[k]; order[cnt[514 + ((uVals[u] >> 16) & 255)]++] = u; }
+      lessV.fill(0); lessH.fill(0);
+
+      let belowV = 0, belowH = 0; // villain / hero weight strictly below the current value
+      for (let g = 0; g < L;) {
+        const x = uVals[order[g]];
+        let e = g + 1; while (e < L && uVals[order[e]] === x) e++;
+        let eqTotV = 0, eqTotH = 0;
+        for (let k = g; k < e; k++) {
+          const u = order[k], vm = vMult[u], hm = hMult[u];
+          if (vm) { eqTotV += vm; eqV[uA[u]] += vm; eqV[uB[u]] += vm; }
+          if (hm) { eqTotH += hm; eqH[uA[u]] += hm; eqH[uB[u]] += hm; }
+        }
+        const aboveV = nVi - belowV - eqTotV, aboveH = nHi - belowH - eqTotH;
+        for (let k = g; k < e; k++) {
+          const u = order[k], a = uA[u], c = uB[u], hm = hMult[u], vm = vMult[u];
+          if (hm) { // u as a hero, against the villain range
+            let w = belowV - lessV[a] - lessV[c];
+            let t = eqTotV - eqV[a] - eqV[c] + vm;
+            let l = aboveV - (cardTotV[a] - lessV[a] - eqV[a]) - (cardTotV[c] - lessV[c] - eqV[c]);
+            if (w < snapV) w = 0;
+            if (t < snapV) t = 0;
+            if (l < snapV) l = 0;
+            hw[u] += w; ht[u] += t; hl[u] += l;
+            win += w * hm; tie += t * hm; lose += l * hm;
+          }
+          if (vm) { // u as a villain, against the hero range
+            let w = belowH - lessH[a] - lessH[c];
+            let t = eqTotH - eqH[a] - eqH[c] + hm;
+            let l = aboveH - (cardTotH[a] - lessH[a] - eqH[a]) - (cardTotH[c] - lessH[c] - eqH[c]);
+            if (w < snapH) w = 0;
+            if (t < snapH) t = 0;
+            if (l < snapH) l = 0;
+            vw[u] += w; vt[u] += t; vl[u] += l;
+          }
+        }
+        for (let k = g; k < e; k++) {
+          const u = order[k], a = uA[u], c = uB[u], vm = vMult[u], hm = hMult[u];
+          if (vm) { lessV[a] += vm; lessV[c] += vm; }
+          if (hm) { lessH[a] += hm; lessH[c] += hm; }
+          eqV[a] = 0; eqV[c] = 0; eqH[a] = 0; eqH[c] = 0;
+        }
+        belowV += eqTotV; belowH += eqTotH;
+        g = e;
+      }
+    }
+    return { win, tie, lose, hw, ht, hl, vw, vt, vl };
   }
 
   /**
@@ -1951,7 +2256,8 @@ class BitVal {
    * @private
    */
   async _runKernelBatches(work, nextBatch, onResult, useWorkers, progressCallback = null) {
-    const runLocal = (b) => onResult(this._runExhaustive(work, b, 0, b.length >> 2), b.length >> 2);
+    const kernel = work.perHand ? this._runExhaustiveHands : this._runExhaustive;
+    const runLocal = (b) => onResult(kernel.call(this, work, b, 0, b.length >> 2), b.length >> 2);
     let workers = null;
     if (useWorkers && typeof Worker !== 'undefined') {
       const n = (typeof navigator !== 'undefined' && navigator.hardwareConcurrency) || 4;
@@ -2007,12 +2313,13 @@ class BitVal {
    */
   async _compareRangeSharedBoards(setup, progressCallback = null, useWorkers = true) {
     const work = this._buildExhaustiveWork(setup);
+    const acc = work.perHand ? this._emptyHandTotals(work.U) : null;
     const ex = this._cardsBitset([...setup.boardCards, ...(setup.deadCards || [])]);
     const deck = [];
     for (let c = 0; c < 52; c++) if (!(c < 32 ? ex.lo & (1 << c) : ex.hi & (1 << (c - 32)))) deck.push(c);
     const pool = Int32Array.from(deck), poolLen = pool.length;
     const k = setup.numberOfCardsToDeal, total = setup.iterations;
-    if (k > poolLen || total <= 0) return { win: 0, tie: 0, lose: 0 };
+    if (k > poolLen || total <= 0) return acc ? { win: 0, tie: 0, lose: 0, work, hands: acc } : { win: 0, tie: 0, lose: 0 };
     const batchSize = Math.max(64, Math.min(1024, Math.ceil(total / 16)));
     const target = setup.mcTarget > 0 ? setup.mcTarget / 100 : 0;
     let st = new XorShift32().state;
@@ -2036,6 +2343,7 @@ class BitVal {
     };
     const onResult = (r, n) => {
       win += r.win; tie += r.tie; lose += r.lose; done += n;
+      if (acc) this._addHandTotals(acc, r);
       const t = r.win + r.tie + r.lose;
       if (t > 0) { const e = (r.win + r.tie / 2) / t; nb++; sumEq += e; sumEq2 += e * e; }
       if (target && nb >= 8) {
@@ -2046,7 +2354,7 @@ class BitVal {
     };
     await this._runKernelBatches(work, nextBatch, onResult, useWorkers, progressCallback);
     if (progressCallback) progressCallback(total, total, 'Complete');
-    return { win, tie, lose };
+    return acc ? { win, tie, lose, work, hands: acc } : { win, tie, lose };
   }
 
   /**
